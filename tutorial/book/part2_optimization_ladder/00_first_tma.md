@@ -221,6 +221,39 @@ asm volatile(
     : "memory");
 ```
 
+### Two clarifications worth knowing now
+
+**`globalStrides` ≈ the leading dimension, in bytes.**  It's the byte
+stride to advance the global address by *one element of the outer
+dimension*.  For our row-major 8 × 64 BF16 tensor, stepping
+`coord_y += 1` (one row down) advances the address by
+`64 × 2 = 128` bytes — which is exactly what we pass:
+`global_strides = [COLS * ELEM_BYTES] = [128]`.
+
+If you've used cuBLAS, this is the same quantity as `lda` / `ldb` /
+`ldc` — cuBLAS counts it in elements, TMA counts it in bytes.
+
+**Scaling to multiple CTAs: coords come from `blockIdx`.**  In this
+chapter we launch one CTA and hard-code `coord_y = 0`.  To load
+*all 8 rows* in parallel, you'd launch 8 CTAs and have each derive
+its `coord_y` from `blockIdx.x`:
+
+```cpp
+// Host launch:
+//   grid = (ROWS, 1, 1)
+//   block = (128, 1, 1)
+const int coord_x = 0;
+const int coord_y = blockIdx.x;     // each CTA owns one row
+```
+
+The TMA engine itself doesn't know about CTAs — it just executes
+whatever `cp.async.bulk.tensor` instruction with whatever coords the
+issuing thread provided.  "One CTA per row" is just a *convention*
+the kernel imposes by setting `coord_y` from `blockIdx`.  This is
+the same pattern matmul will use in chapter 02 onward: each CTA's
+`(bid_m, bid_n)` becomes coord arguments to its A-tile and B-tile
+TMA loads.
+
 ## Step 3 — the mbarrier handshake
 
 We covered the mbarrier primitive conceptually in
