@@ -138,6 +138,36 @@ A few things to call out:
   global shape.  `NONE` means the caller is responsible for staying
   in bounds.
 
+### Aside — coming from numpy / PyTorch?
+
+`globalDim` and `boxDim` are both *shape tuples* — they're not
+opposites.  The distinction is *whose shape*:
+
+| TMA descriptor | numpy / torch analogy                                  |
+|----------------|--------------------------------------------------------|
+| `globalDim`    | `whole_tensor.shape` — the entire tensor's shape       |
+| `boxDim`       | the shape of one *tile / window* cut from it           |
+
+A concrete framing: suppose you want to walk a 2D matrix one tile at
+a time.
+
+```python
+A = torch.empty(M, K)              # the global tensor
+tile = A[m0:m0+BM, k0:k0+BK]       # one box; tile.shape == (BM, BK)
+```
+
+* `A.shape`    ↔ `globalDim = {K, M}` (TMA uses innermost-first order)
+* `tile.shape` ↔ `boxDim    = {BK, BM}`
+* `(m0, k0)`   ↔ the `{coord_x, coord_y}` passed to the instruction
+
+One TMA instruction is essentially a hardware-accelerated
+`A[m0:m0+BM, k0:k0+BK]`, copied directly into SMEM.
+
+(One linguistic gotcha: `torch.Tensor.size()` returns the same tuple
+as `.shape` — it's not the element count.  Numpy's bare `arr.size`
+returns the count.  Neither corresponds to `globalDim`; `globalDim`
+is always a shape tuple.)
+
 That's it for the host side.  Once `tmap` is built, it's passed to
 the kernel by value — the kernel parameter is
 `const __grid_constant__ CUtensorMap`.
