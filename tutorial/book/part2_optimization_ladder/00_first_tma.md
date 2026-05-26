@@ -118,6 +118,17 @@ cp.async.bulk.tensor.1d.shared::cta.global.mbarrier::complete_tx::bytes
 * `coord_x` — for 1D, a single 32-bit element index into the global
   tensor.  This is the *start* of the box we want to load; the TMA
   engine fetches `boxDim[0]` consecutive elements from there.
+
+  **The number of coordinates matches the descriptor's `rank`.** Our
+  descriptor was built with `rank = 1`, so the instruction's
+  coordinate vector is `{coord_x}` — one entry.  A 2D descriptor
+  takes `{coord_x, coord_y}`; a 3D one, `{coord_x, coord_y, coord_z}`.
+  We'll see these in chapter 01.
+
+  **Coordinates are in *elements*, not bytes.**  Our element type is
+  `uint8` (1 byte per element), so the two happen to coincide here.
+  With BF16 (2 bytes per element) `coord_x = N` would mean "load the
+  box starting at byte 2N."
 * `mbar_addr` — an SMEM address of the mbarrier that will receive the
   completion signal.
 
@@ -196,9 +207,25 @@ asm volatile(
 ```
 
 `phase` is the software-mirror of the mbarrier's parity bit (see the
-[Part 1 mbarrier chapter](../part1_gpu_arch/mbarrier)).  For a
-*single* load it's always 0; we'd only flip it across multiple
-iterations.
+[Part 1 mbarrier chapter](../part1_gpu_arch/mbarrier)).  The
+instruction's semantics are: **succeeds when the mbarrier's current
+parity bit is the *opposite* of the operand.**
+
+For a single-shot load, the state trace is:
+
+| Event                          | mbarrier parity | Operand we pass | Wait result   |
+|--------------------------------|:---------------:|:---------------:|:-------------:|
+| After `mbarrier.init`          | 0               | —               | not yet       |
+| After our load completes       | **1** (flipped) | 0               | **succeeds**  |
+
+So we pass `phase = 0` on the first wait because we want to block
+until the parity is *no longer* 0 — i.e., until the load has
+completed and the parity has flipped to 1.
+
+If we did a second load on the same mbarrier (chapter 02 will), its
+completion would flip parity back to 0, so we'd pass `phase = 1` for
+that wait.  In a real K-loop that's `phase ^= 1` after each successful
+wait — the software mirror chases the hardware's flipping bit.
 
 The `%=` suffix on the labels (`WAIT_%=`, `DONE_%=`) tells the
 compiler to make them unique per `asm` instantiation, so the same

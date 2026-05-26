@@ -47,6 +47,9 @@ extern "C" __global__ void tma_demo(
     // mbarrier.arrive.expect_tx adds CHUNK_BYTES to the mbarrier's
     // tx_count and decrements arrival_count by 1.
     if (threadIdx.x == 0) {
+        // Coordinate count matches the descriptor's rank (here, 1).
+        // Value is in *elements* (not bytes); 0 = start of the buffer.
+        // Since our element type is uint8, elements happen to equal bytes.
         const int coord_x = 0;
         asm volatile(
             "cp.async.bulk.tensor.1d.shared::cta.global.mbarrier::complete_tx::bytes "
@@ -60,9 +63,12 @@ extern "C" __global__ void tma_demo(
 
     // ── 3) All threads spin on try_wait.parity until the load lands.
     //
-    // For a single-shot load `phase` is 0 (the parity bit will flip
-    // from 0 → 1 when both counters reach zero, at which point
-    // try_wait succeeds).
+    // try_wait.parity succeeds when the mbarrier's current parity bit
+    // is the *opposite* of the operand.  After init, parity is 0; the
+    // first completion flips it to 1.  So we pass `phase = 0` to mean
+    // "block until parity is no longer 0 = no longer at init state."
+    // A K-loop would `phase ^= 1` after each successful wait so the
+    // software mirror chases the hardware's flipping parity.
     const uint32_t phase = 0;
     asm volatile(
         "{\n\t .reg .pred P;\n\t"
