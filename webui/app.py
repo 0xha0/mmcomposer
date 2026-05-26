@@ -338,28 +338,14 @@ KERNEL_PREVIEW = dedent(r"""
 """).strip()
 
 
-def emit_step(container, idx: int, label: str, desc: str, tflops: int):
-    """Render one step of the agent walk."""
-    container.markdown(f"**Step {idx + 1}/{len(LADDER)} — {label}**")
-    container.markdown(f"&nbsp;&nbsp;&nbsp;{desc}", unsafe_allow_html=True)
-    cols = container.columns(3)
-    cols[0].metric("Compile",         "✓",   help="nvcc returned 0")
-    cols[1].metric("Correctness",     "✓",   help="bit-identical to cublas_bf16")
-    cols[2].metric("Performance",     f"{tflops} TFLOPS",
-                   delta=f"+{tflops - (LADDER[idx - 1][2] if idx > 0 else 0)} vs prev" if idx > 0 else None)
-    container.divider()
-
-
 if go:
     with out:
         st.info("Running agent loop — each step adds one optimization, compiles, checks correctness, benchmarks.")
         progress = st.progress(0.0, text="Initializing...")
-        step_area = st.container()
 
         for i, (label, desc, tflops) in enumerate(LADDER):
             time.sleep(0.45)   # demo pause; replace with real agent call later
             progress.progress((i + 1) / len(LADDER), text=f"Step {i + 1}/{len(LADDER)}: {label}")
-            emit_step(step_area, i, label, desc, tflops)
 
         progress.empty()
         st.success(
