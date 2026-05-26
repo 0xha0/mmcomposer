@@ -1,0 +1,4 @@
+# Web UI dependencies (Streamlit-based pitch demo).
+# Install with: pip install -r webui/requirements.txt
+
+streamlit>=1.36,<2.0
