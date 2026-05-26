@@ -36,13 +36,55 @@ thread block cluster.
 
 ## The two counters
 
-* **arrival_count** — decremented by `mbarrier.arrive[.expect_tx]`.
-  Reaches zero when N arrivals have happened.
-* **tx_count** — decremented by TMA bulks via the
-  `mbarrier::complete_tx::bytes` modifier.  Reaches zero when the
-  expected bytes have arrived.
+The mbarrier keeps track of two things in parallel:
 
-Both must reach zero before the phase completes.
+### `arrival_count` — counts thread-level arrivals
+
+Set at init time to `N`, the number of arrivals the mbarrier expects
+before the current phase can complete.  Each `mbarrier.arrive` (or
+`mbarrier.arrive.expect_tx`) executed by a thread decrements it by 1.
+
+When the kernel uses an mbarrier as a thread-synchronization barrier
+(like a fancy `__syncthreads`), N is set to the number of threads
+that will participate, and each one calls `arrive` exactly once.
+
+When the kernel uses an mbarrier purely for **TMA completion** —
+which is what TMA does — the "arrivals" are not really threads
+synchronizing with each other.  N is typically set to **1**, and a
+single thread (often the same one that issued the TMA) calls
+`mbarrier.arrive.expect_tx(bytes)` once.  That single call:
+
+- decrements `arrival_count` from 1 to 0 (the lone "arrival"), and
+- adds `bytes` to `tx_count` (declaring how many bytes are coming).
+
+So in TMA-only code paths, "N arrivals" is just a one-time signal
+from the producer thread, not the multi-thread rendezvous you'd
+get with `__syncthreads`.  It's the *tx_count* that does the real
+work — see below.
+
+For 2-CTA cluster TMA (covered in Part 2), the init count goes up to
+`CTA_GROUP = 2`: each CTA's TMA warp arrives once, on the same
+shared mbarrier.
+
+### `tx_count` — counts bytes-in-flight
+
+Set to 0 at init.  Two things modify it:
+
+- `mbarrier.arrive.expect_tx(bytes)` **adds** `bytes` to it (declaring
+  expected work).
+- TMA bulks with the `mbarrier::complete_tx::bytes` modifier
+  **subtract** the bytes they actually transferred as they land.
+
+When `tx_count` reaches zero, the expected data has fully arrived.
+
+### Phase completion
+
+The current phase completes when **both** counters reach zero
+simultaneously — i.e., the right number of arrivals have happened
+*and* the expected bytes have all landed.  At that moment the
+hardware atomically auto-resets both counters (and flips the parity
+bit — see next section), so the same mbarrier can be reused for the
+next phase.
 
 ## Phase parity (the tricky part)
 
