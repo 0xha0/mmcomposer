@@ -67,9 +67,23 @@ cp.async.bulk.tensor.<rank>d
 
 ## Coordinates and box dimensions
 
-The coords passed to the instruction are *not* byte offsets — they are
-indices into the descriptor's logical shape.  Box dims are encoded
-once in the descriptor; the coords pick *which* box at runtime.
+The descriptor describes the tensor at two scales: **`globalDim`** is
+the entire tensor's shape, **`boxDim`** is the per-load tile's shape.
+Both are arrays of `rank` entries, listed innermost-first.
+
+The relationship: `boxDim ≤ globalDim` along every dimension.
+
+- `boxDim == globalDim` (every dim) → a single TMA load covers the
+  whole tensor.  Useful for small one-shot transfers.
+- `boxDim < globalDim` (some dim) → the tensor is larger than one
+  box; multiple loads at different coords walk it.  This is the
+  matmul case, where a single bulk grabs one (BM, BK) tile of A and
+  the K-loop issues one bulk per K-tile.
+
+The coords passed to the instruction are *not* byte offsets — they
+are indices into the descriptor's logical shape, in elements.  Box
+dims are encoded once in the descriptor; the coords pick *which* box
+at runtime.
 
 ## Swizzling
 

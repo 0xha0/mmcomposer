@@ -98,15 +98,37 @@ A few things to call out:
   `rank` coordinates in its `{coord_x, ...}` vector.  Descriptor rank
   → kernel-side dimensionality.
 
-* **`globalDim`** is the logical shape of the entire tensor as the TMA
-  engine sees it.  For 1D it's just one number — the total length in
-  elements.
+* **`globalDim`** is the logical shape of the entire tensor as the
+  TMA engine sees it.  One entry per dimension (`rank` entries
+  total), listed **innermost first** — the first entry corresponds
+  to the `x` coordinate you pass to the kernel-side instruction.
+
+  | Tensor                  | `rank` | `globalDim`           | Note                              |
+  |-------------------------|:------:|-----------------------|-----------------------------------|
+  | 1D, `N` elements        | 1      | `{N}`                 | our chapter                       |
+  | 2D matrix `A: (M, K)` row-major | 2 | `{K, M}`             | K is contiguous → innermost       |
+  | 3D, e.g. `[K/64, M, 64]`| 3      | `{64, M, K/64}`       | matmul slab trick (chapter 06)    |
+
 * **`globalStrides`** is the per-dimension stride array, *but only for
-  the outer dimensions* — there are `rank − 1` of them.  For 1D that's
-  zero entries, so we pass `nullptr`.
+  the outer dimensions* — there are `rank − 1` of them.  The
+  innermost stride is always one element and is implicit.  Strides
+  are in **bytes**, not elements.  For 1D that's zero entries, so
+  we pass `nullptr`.
 * **`boxDim`** is the per-load shape — how many elements a single
-  TMA bulk fetches.  Each `cp.async.bulk.tensor` instruction grabs
-  exactly one box.
+  TMA bulk fetches in each dimension.  Same dimensionality and
+  ordering as `globalDim`.  Each `cp.async.bulk.tensor` instruction
+  grabs exactly one box, starting at the coordinates you pass.
+
+  The key relationship: `boxDim ≤ globalDim` along every dimension.
+
+  - If `boxDim == globalDim` in every dim, **one TMA load covers the
+    whole tensor** (our chapter 00 case: both are `{128}`).
+  - If `boxDim < globalDim` in some dim, **the tensor takes multiple
+    loads to fully cover**, one per box at a different coordinate.
+    This is the matmul case: a 2D A might have `globalDim = {K, M}`
+    but `boxDim = {BK, BM}`, so each `cp.async.bulk.tensor.2d` grabs
+    one (BM, BK) tile of A — the K-loop iterates by issuing one
+    load per K-tile.
 * **`elementStrides`** lets you skip elements in any dimension.  Almost
   always `{1, 1, ...}`.
 * **`swizzle`** is the SMEM-side layout the TMA engine will apply on

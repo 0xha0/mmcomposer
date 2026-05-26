@@ -105,10 +105,15 @@ cu(driver.cuMemcpyHtoD(g_in_d, g_in_host.ctypes.data, CHUNK_BYTES))
 # per-load box covering all CHUNK_BYTES.  No swizzling, no L2 promotion,
 # no out-of-bounds fill.
 
+# globalDim: total tensor shape, innermost-first.  rank entries.
+# boxDim:    per-load shape, same ordering.  rank entries.
+# Here both are {128} — one TMA load covers the entire 128-byte buffer.
 global_dim      = (ctypes.c_uint64 * 1)(CHUNK_BYTES)
 box_dim         = (ctypes.c_uint32 * 1)(CHUNK_BYTES)
 element_strides = (ctypes.c_uint32 * 1)(1)
-# globalStrides is rank - 1 entries; for 1D that's 0 entries → pass NULL.
+# globalStrides: outer-dim strides in BYTES, rank - 1 entries.
+# For 1D that's 0 entries → pass NULL.
+
 
 tmap = driver.CUtensorMap()
 cu(driver.cuTensorMapEncodeTiled(
