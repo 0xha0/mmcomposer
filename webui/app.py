@@ -64,6 +64,27 @@ with st.sidebar:
         help="Input data type for A and B.  C is fp32 accumulator → output dtype.",
     )
 
+    # ── Operand layout ───────────────────────────────────────────────
+    st.subheader("Operand layout")
+    st.caption(
+        "Layout of the input matrices A (M × K) and B.  A is always stored "
+        "row-major, dense.  B's transpose and density are configurable."
+    )
+    b_transposed = st.selectbox(
+        "B transposed?",
+        ["No", "Yes"],
+        help="`No`  → B is stored as (K, N) row-major — PyTorch's natural layout for `A @ B`.  "
+             "`Yes` → B is stored as (N, K) row-major (i.e. transposed).  "
+             "Currently no plan to support A transposed.",
+    )
+    a_format = st.selectbox(
+        "A's format",
+        ["Dense", "Blocksparse"],
+        help="`Dense`        → A is a fully populated row-major matrix.  "
+             "`Blocksparse`  → A has a regular block-sparse pattern (e.g. 2:4, 4:8 structured sparsity).  "
+             "Currently no plan to support a blocksparse B.",
+    )
+
     # ── Tile shape ───────────────────────────────────────────────────
     st.subheader("Tile shape  (BM × BN × BK)")
     st.caption(
@@ -172,6 +193,10 @@ intent = {
     "target": {
         "gpu":   gpu.split(" — ")[0],
         "dtype": dtype.split(" — ")[0],
+    },
+    "operand_layout": {
+        "a_format":     a_format.lower(),       # "dense" | "blocksparse"
+        "b_transposed": (b_transposed == "Yes"),
     },
     "tile":  {"BM": parse_dim(bm), "BN": parse_dim(bn), "BK": parse_dim(bk)},
     "data_movement": {
