@@ -80,6 +80,24 @@ cuTensorMapEncodeTiled(
 
 A few things to call out:
 
+* **`rank`** is the number of dimensions of the tensor the descriptor
+  describes.  `rank = 1` → 1D array; `rank = 2` → 2D matrix; up to
+  `rank = 5`.  It's the standard tensor-rank usage (unrelated to
+  linear-algebra matrix rank; they share a word but mean different
+  things).
+  Rank determines the shape of every other field below:
+
+  | Array            | Entries        | Why                                                |
+  |------------------|:--------------:|----------------------------------------------------|
+  | `globalDim`      | `rank`         | one length per dim                                 |
+  | `globalStrides`  | **`rank − 1`** | innermost stride is always 1 element (implicit)    |
+  | `boxDim`         | `rank`         | the box has a size in every dim                    |
+  | `elementStrides` | `rank`         | one stride per dim                                 |
+
+  On the kernel side, `cp.async.bulk.tensor.<rank>d` takes exactly
+  `rank` coordinates in its `{coord_x, ...}` vector.  Descriptor rank
+  → kernel-side dimensionality.
+
 * **`globalDim`** is the logical shape of the entire tensor as the TMA
   engine sees it.  For 1D it's just one number — the total length in
   elements.

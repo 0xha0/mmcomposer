@@ -114,7 +114,7 @@ tmap = driver.CUtensorMap()
 cu(driver.cuTensorMapEncodeTiled(
     tmap,
     driver.CUtensorMapDataType.CU_TENSOR_MAP_DATA_TYPE_UINT8,
-    1,                                                            # rank
+    1,                                                            # rank = number of dims (1D here; 2D/3D in matmul)
     int(g_in_d),                                                  # global address
     global_dim,
     None,                                                         # globalStrides

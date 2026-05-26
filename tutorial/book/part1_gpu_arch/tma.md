@@ -25,6 +25,12 @@ modern matmul kernels.
 A 128-byte opaque struct built host-side via `cuTensorMapEncodeTiled`.
 Passed to the kernel as a `__grid_constant__` parameter.  Encodes:
 
+* **Rank** — the number of dimensions of the tensor (1 through 5).
+  Determines how many entries `globalDim` / `boxDim` /
+  `elementStrides` have (each `rank`), how many entries
+  `globalStrides` has (`rank − 1` — innermost stride is implicit),
+  and how many coordinates the kernel-side
+  `cp.async.bulk.tensor.<rank>d` instruction takes.
 * Data type (`CU_TENSOR_MAP_DATA_TYPE_BFLOAT16`, ...)
 * Global pointer + shape + strides
 * Box dimensions (the tile shape TMA will copy)
