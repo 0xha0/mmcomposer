@@ -166,23 +166,6 @@ buffering"): TMA writes one slot while MMA reads the other, and the
 two run concurrently.  That's the most impactful single optimization
 in the whole ladder — it roughly doubles throughput.
 
-## What this chapter doesn't do
-
-To stay focused on the K-loop concept:
-
-- **Single CTA.**  Grid is still `(1, 1, 1)`, so the kernel only
-  computes one `(BM × BN)` tile of output.  Going to a full M×N output
-  means launching a grid of CTAs and deriving each one's `(bid_m,
-  bid_n)` from `blockIdx` — covered in the chapter on grid mapping.
-- **Single SMEM stage.**  As just discussed — multi-stage buffering is
-  chapter 04.
-- **No warp specialization.**  The TMA-issuing warp and the
-  MMA-issuing warp are different *warps* but they're both stalled
-  waiting on the same mbar at any given moment.  True warp
-  specialization (TMA warp and MMA warp running concurrently, never
-  blocking each other) needs the pipelining infrastructure from
-  chapter 04 to be useful.
-
 ## Take-away
 
 The outer K-loop is the smallest possible structural change that lifts
