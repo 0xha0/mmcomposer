@@ -33,10 +33,11 @@ constexpr int M       = 128;
 constexpr int N       = 256;
 constexpr int K       = 64;
 constexpr int MMA_K   = 16;
+constexpr int BF16_BYTES = 2;        // byte size of the operand element
 constexpr int K_MMAS  = K / MMA_K;          // 4
 
-constexpr int A_SMEM_BYTES = M * K * 2;     // 16384
-constexpr int B_SMEM_BYTES = N * K * 2;     // 32768
+constexpr int A_SMEM_BYTES = M * K * BF16_BYTES;     // 16384
+constexpr int B_SMEM_BYTES = N * K * BF16_BYTES;     // 32768
 constexpr int TILE_BYTES   = A_SMEM_BYTES + B_SMEM_BYTES;
 
 constexpr int THREADS   = 128;
@@ -226,8 +227,8 @@ extern "C" __global__ void tcgen05_demo(
     if (warp_id == 0 && elect_sync()) {
         #pragma unroll
         for (int kk = 0; kk < K_MMAS; kk++) {
-            const uint64_t a_desc = make_desc(A_BASE + kk * 32);   // K-step = 16 BF16 = 32 B
-            const uint64_t b_desc = make_desc(B_BASE + kk * 32);
+            const uint64_t a_desc = make_desc(A_BASE + kk * MMA_K * BF16_BYTES);   // K-step = 16 BF16 = 32 B
+            const uint64_t b_desc = make_desc(B_BASE + kk * MMA_K * BF16_BYTES);
             // First MMA overwrites the accumulator (P = false); rest accumulate.
             tcgen05_mma(taddr, a_desc, b_desc, idesc, /*enable_d=*/ kk > 0);
         }

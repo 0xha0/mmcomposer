@@ -16,12 +16,13 @@ constexpr int BM      = 128;
 constexpr int BN      = 256;
 constexpr int BK      = 64;
 constexpr int MMA_K   = 16;
+constexpr int BF16_BYTES = 2;        // byte size of the operand element
 constexpr int K_MMAS  = BK / MMA_K;          // 4
 
 constexpr int NS      = 2;                   // multi-stage depth
 
-constexpr int A_SLOT_BYTES = BM * BK * 2;    // 16 KB
-constexpr int B_SLOT_BYTES = BN * BK * 2;    // 32 KB
+constexpr int A_SLOT_BYTES = BM * BK * BF16_BYTES;    // 16 KB
+constexpr int B_SLOT_BYTES = BN * BK * BF16_BYTES;    // 32 KB
 constexpr int SLOT_BYTES   = A_SLOT_BYTES + B_SLOT_BYTES;          // 48 KB / slot
 
 constexpr int THREADS   = 128;
@@ -221,8 +222,8 @@ extern "C" __global__ void matmul_multi_cta(
 
             #pragma unroll
             for (int kk = 0; kk < K_MMAS; kk++) {
-                const uint64_t a_desc = make_desc(A_base(slot) + kk * 32);
-                const uint64_t b_desc = make_desc(B_base(slot) + kk * 32);
+                const uint64_t a_desc = make_desc(A_base(slot) + kk * MMA_K * BF16_BYTES);
+                const uint64_t b_desc = make_desc(B_base(slot) + kk * MMA_K * BF16_BYTES);
                 const bool first_ever = (k == 0) && (kk == 0);
                 tcgen05_mma(taddr, a_desc, b_desc, idesc, /*enable_d=*/ !first_ever);
             }
