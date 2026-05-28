@@ -241,6 +241,41 @@ and undoes the permutation internally, so the MMA still computes the
 right product — but any hand-written SMEM access has to apply the same
 XOR.
 
+### Full-row view — seeing the 16-byte unit
+
+The print above shows *one representative per chunk*, which is only
+valid because the input is constant within each 16-byte chunk.  Drop
+that collapse and print all 64 elements of a row — grouping into chunks
+with `|` — and the atomic unit becomes literal (the script does this for
+rows 0, 1, 4; `N×8` here means "the value `N` repeated 8 times"):
+
+```
+  in  row 1:  10×8 | 11×8 | 12×8 | 13×8 | 14×8 | 15×8 | 16×8 | 17×8
+  out row 1:  11×8 | 10×8 | 13×8 | 12×8 | 15×8 | 14×8 | 17×8 | 16×8
+  in  row 4:  40×8 | 41×8 | 42×8 | 43×8 | 44×8 | 45×8 | 46×8 | 47×8
+  out row 4:  44×8 | 45×8 | 46×8 | 47×8 | 40×8 | 41×8 | 42×8 | 43×8
+```
+
+Everything about the 16-byte unit is visible here:
+
+* **Each `|`-group is one chunk** = 8 identical BF16 = 16 bytes = 4
+  banks.  That run-of-8 is exactly what the collapsed print represented
+  with a single number.
+* **Chunks move as whole blocks.**  Row 1 (XOR 1) swaps blocks in pairs
+  — the `10`-block and `11`-block trade places, neither is split.  Row 4
+  (XOR 4) swaps the two halves — the four high blocks jump ahead of the
+  four low ones, each block intact.
+* **Within a block, order is never touched** — there's no
+  `11 11 10 …` scrambling.  The permutation is strictly chunk-granular.
+* **Row 0 (XOR 0)** is identical in/out — the baseline.
+
+(The constant-within-chunk input can't reveal whether the 8 elements
+*inside* a chunk keep their order — they're all equal.  Set
+`g_in[r][c] = c` instead and a row prints `0 1 … 7 | 8 9 … 15 | …`; after
+swizzle you'd see those ascending 8-wide blocks reordered with their
+internal `0..7` runs preserved — confirming intra-chunk order is
+untouched.)
+
 ## Why this eliminates bank conflicts
 
 This is the whole point of swizzling, so it's worth doing carefully.

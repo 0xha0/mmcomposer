@@ -101,6 +101,21 @@ print("\nOUTPUT g_out (raw SWIZZLE_128B SMEM layout):")
 for r, row in enumerate(chunk_reps(g_out)):
     print(f"  row {r}: {row}")
 
+# Full-row view: print every element (not one rep per chunk), grouped
+# into 16-byte chunks with '|' separators.  Because the input is constant
+# within a chunk, each group shows up as 8 identical values — making the
+# 16-byte (= 8 BF16) atomic unit directly visible.
+def full_row(t, r):
+    vals = t[r].to(torch.int32).cpu().tolist()
+    groups = ["".join(f"{v:3d}" for v in vals[i:i + CHUNK])
+              for i in range(0, COLS, CHUNK)]
+    return " |".join(groups)
+
+print("\nFULL ROWS (all 64 elements, '|' marks each 16-byte chunk):")
+for r in (0, 1, 4):
+    print(f"  in  row {r}: {full_row(g_in,  r)}")
+    print(f"  out row {r}: {full_row(g_out, r)}")
+
 # Verify the layout is exactly chunk-XOR-by-row: physical chunk pc of row r
 # holds logical chunk (pc XOR r).
 expected = torch.empty_like(g_in)
