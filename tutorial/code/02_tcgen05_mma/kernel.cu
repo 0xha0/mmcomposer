@@ -233,60 +233,37 @@ extern "C" __global__ void tcgen05_demo(
 
     // ── 6) TMEM → registers → GMEM (direct, uncoalesced) ────────────
     //
-    // What TMEM holds at this point:
+    // Ownership — **each thread owns one entire output row**:
     //
-    //     a M-row × N-col grid of FLOAT32 accumulators — one cell per
-    //     output element C[m, n], 4 bytes each, written there by the
-    //     four tcgen05.mma calls above.  Total: 128 × 256 × 4 B = 128 KB
-    //     of TMEM.  The hardware allocated us BN=256 columns spanning
-    //     M=128 fixed rows (TMEM has 128 rows per allocation block).
+    //     thread t  (warp w, lane l)  →  TMEM row (w*32 + l), all N cols
+    //     warp w                       →  32 rows × all N cols
+    //     4 warps × 32 lanes           →  M=128 rows × N=256 = whole C
     //
-    // TMEM addressing recap:  bits [31:16] = row, bits [15:0] = col.
-    // So  `taddr + (row << 16) + col`  is the cell at (row, col).
+    // TMEM here is an M × N grid of FP32 accumulators.  Address
+    // encoding: bits [31:16] = row, bits [15:0] = col, so
+    // `taddr_row_base = taddr + (warp_id*32 << 16)` points at this
+    // warp's 32-row strip, column 0.
     //
-    //   taddr_row_base = taddr + (warp_id * 32) << 16
-    //       → points at the *start* of this warp's 32-row strip of TMEM
-    //         (column 0).  Each warp owns rows [warp_id*32, warp_id*32+32).
+    // `tcgen05.ld.32x32b.x8` only delivers **8 columns per call** (32
+    // lanes × 8 cols = 256 floats / warp), so this lane gets just 8 of
+    // its row's 256 floats per call — hence the N/8 = 32-iter loop
+    // sliding the 8-col window across the row.
     //
-    // What `tcgen05.ld.32x32b.x8` does — it's a warp-collective load:
+    //     col:  0   1   2   3   4   5   6   7    ← one .x8 call
+    //   row 0:  ●   ●   ●   ●   ●   ●   ●   ●    → lane 0
+    //   row 1:  ●   ●   ●   ●   ●   ●   ●   ●    → lane 1
+    //    ...
+    //   row 31: ●   ●   ●   ●   ●   ●   ●   ●    → lane 31
     //
-    //   * "32x32b" — the warp's 32 lanes cooperatively read **32 TMEM
-    //     rows × 1 column** per "step", lane L getting the value at row L
-    //     of the warp's strip.
-    //   * ".x8"    — packing factor: the instruction reads **8 such
-    //     columns at once** (32 rows × 8 cols = 256 floats / warp), and
-    //     distributes them so each lane ends up with its 8 floats —
-    //     consecutive N-columns of its single row.
+    // Per iter: 8 FP32 → 4 bfloat162 (16 B) → one int4 store to
+    // C[my_row, n..n+7].  Lane L's store is N*2 = 512 B away from
+    // lane L+1's, so a warp's 32 stores scatter across 32 cache lines —
+    // uncoalesced.  Fine for this minimal demo; a later chapter stages
+    // through SMEM to coalesce.
     //
-    // So after one call, this lane's `tmp[0..7]` holds the 8 FP32
-    // accumulators for output row `my_row` at columns `[n, n+8)`.
-    //
-    // The per-warp picture:
-    //
-    //        TMEM strip (warp_id = 0, so rows 0..31):
-    //
-    //            col:  0   1   2   3   4   5   6   7   ←─ one .x8 call
-    //          row 0:  •   •   •   •   •   •   •   •     → lane 0 gets these 8
-    //          row 1:  •   •   •   •   •   •   •   •     → lane 1 gets these 8
-    //          row 2:  •   •   •   •   •   •   •   •     → lane 2 ...
-    //           ...
-    //          row 31: •   •   •   •   •   •   •   •     → lane 31 gets these 8
-    //
-    //        The `for (n = 0; n < N; n += 8)` loop slides this window
-    //        across N, so each lane covers all 256 N-cols of its row.
-    //
-    // Then per-thread: 8 FP32 → 4 bfloat162 (= 8 BF16 = 16 B) via
-    // `__floats2bfloat162_rn`, and store one int4 to GMEM at
-    // C[my_row * N + n].  This is the *uncoalesced* part: lane L's int4
-    // store lands at byte offset `my_row * N * 2 + n*2`, and consecutive
-    // lanes are `N*2 = 512` bytes apart → 32 scattered transactions per
-    // warp instead of one coalesced cycle.  Fine for this minimal demo;
-    // a later chapter stages through SMEM to coalesce.
-    //
-    // Mirror of step 3's fence, opposite direction: mma_done mbar told
-    // the thread "all MMAs finished," but tcgen05.ld reads TMEM through
-    // the tcgen05 proxy — fence publishes the thread's mbar-wait order
-    // to the tcgen05 unit so the ld sees the MMA's writes.
+    // (Fence below: mirror of step 3's, opposite direction.  mma_done
+    // mbar told the thread the MMAs finished; the fence publishes that
+    // to the tcgen05 proxy so tcgen05.ld sees the MMA writes.)
     tcgen05_fence_after_thread_sync();
 
     const int my_row = warp_id * 32 + lane;
