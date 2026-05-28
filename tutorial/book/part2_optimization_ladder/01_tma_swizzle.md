@@ -76,9 +76,24 @@ tmap = encode_tensor_map(
 
 ## The 128B swizzle rule
 
-With BF16, a 128-byte SMEM row holds 64 elements = **eight 16-byte
-chunks** of 8 BF16 each.  128B swizzle permutes those eight chunks, and
-the permutation for row `r` is a single XOR:
+One sentence to anchor everything that follows:
+
+> **128B swizzle permutes 16-byte chunks within each 128-byte row,
+> keyed by the row index.**
+
+Three quantities, and it's worth keeping them distinct because they're
+easy to blur together:
+
+| Term | What it is | BF16 value |
+|------|-----------|------------|
+| **chunk** — the *unit* that moves | a fixed **16 bytes** = **4 banks** | 8 BF16 |
+| **row** — the *window* it moves within | **128 bytes** = 8 chunks = 32 banks | 64 BF16 |
+| **key** — the XOR amount | the **row index** `r mod 8` | — |
+
+So a 128-byte SMEM row holds eight 16-byte chunks, and the swizzle
+reshuffles those eight chunks *among themselves* — a chunk never leaves
+its 128-byte row, and the 8 BF16 inside a chunk always ride together.
+The permutation for row `r` is a single XOR:
 
 ```
 physical_chunk = logical_chunk  XOR  (r mod 8)
@@ -103,6 +118,13 @@ its own inverse, the same formula reads both directions: physical chunk
                 └───┴───┴───┴───┴───┴───┴───┴───┘
                   each cell = which LOGICAL chunk lands here
 ```
+
+**Read each cell as a whole 16-byte chunk, not a single element.**  This
+trips everyone up at least once.  A cell is one chunk = 8 BF16 = 4
+banks; it is *not* a 2-byte value.  So the 8 columns are 8 chunks =
+`8 × 4 = 32` banks = one full 128-byte row.  (We return to the bank
+arithmetic — and why this layout is conflict-free — in
+[its own section](#why-this-eliminates-bank-conflicts) below.)
 
 (`32B` and `64B` swizzle are the same idea over 2 and 4 chunks
 respectively; `128B` is what matmul uses, so it's the one we show.)
@@ -219,6 +241,85 @@ and undoes the permutation internally, so the MMA still computes the
 right product — but any hand-written SMEM access has to apply the same
 XOR.
 
+## Why this eliminates bank conflicts
+
+This is the whole point of swizzling, so it's worth doing carefully.
+
+**Banks, in one line.**  SMEM is split into **32 banks of 4 bytes** each;
+`bank = (byte_offset / 4) mod 32`.  A warp can hit all 32 banks in one
+cycle, but if two threads address *different* words in the *same* bank,
+the access serializes — a conflict.
+
+### The table works at two scales
+
+Re-reading the swizzle table with the "each cell is a 16-byte chunk"
+fact, every cell, row, and column maps cleanly onto banks:
+
+```
+ one CELL    = 1 chunk  = 8 BF16 = 16 B = 4 banks
+ one ROW     = 8 chunks          = 128 B = 32 banks   (a full bank cycle)
+ one COLUMN  = a physical slot   = a fixed 4-bank group across all rows
+```
+
+A chunk (cell) starts at bank `4 × physical_slot`, so the 8 columns of
+the table land on bank groups `0–3, 4–7, 8–11, …, 28–31` — tiling all
+32 banks exactly once.
+
+### The access that conflicts
+
+The MMA reads operands via `ldmatrix`-style 8×8 tiles.  Crucially, **one
+`ldmatrix` matrix-row is 8 BF16 = exactly one chunk.**  An 8×8 load is 8
+lanes, each fetching one chunk from a *different SMEM row*, all at the
+*same logical column* (say column 0 = logical chunk 0).  Eight identical
+logical requests — the worst case.
+
+**Without swizzle**, all 8 rows keep logical chunk 0 in physical slot 0
+= banks 0–3.  Eight lanes pile onto 4 banks → 8-way conflict, 28 banks
+idle:
+
+```
+            bank:  0  1  2  3 │ 4 ............................ 31
+ lanes 0–7      →  ███████████ │          (all idle)
+                   ▲ 8 lanes contend for banks 0–3  → 8 transactions
+```
+
+**With swizzle**, logical chunk 0 of row `r` sits at physical slot
+`0 XOR r = r` — the diagonal of the table — so the 8 lanes fan out
+across all 32 banks, 4 each:
+
+```
+            bank:  0  1  2  3 │ 4  5  6  7 │ 8  9 10 11 │ ... │28 29 30 31
+ lane 0 (row 0) →  ███████████ │            │            │     │
+ lane 1 (row 1) →             │ ███████████ │            │     │
+ lane 2 (row 2) →             │            │ ███████████ │     │
+   ...                                                          ███████████
+                   └─ 8 lanes × 4 banks = 32 banks, no overlap → 1 transaction ─┘
+```
+
+The numbers close perfectly: the SMEM port delivers `32 banks × 4 B =
+128 B` per cycle, and 8 lanes read `8 × 16 B = 128 B`.  A conflict-free
+8-row read is *exactly* one full bank cycle — which only happens because
+the 8 chunks cover all 32 banks instead of stacking on 4.
+
+### Why XOR, and why it's free
+
+XOR-ing a fixed logical-chunk index with `0..7` always yields a
+permutation of `0..7`, so **whatever column** the MMA reads, the 8 rows
+always scatter across 8 distinct 4-bank groups — no column is special.
+An additive shift wouldn't guarantee that (it aliases for some
+patterns).  And because XOR is its own inverse, the consumer recovers
+the data by applying the *same* formula — the swizzle is simultaneously
+the write layout and the read addressing, costing nothing but a few XOR
+gates on the address.
+
+This is also why both matmul operands are swizzled identically:
+`ldmatrix` reads A and B the same way — each lane a contiguous 16-byte
+chunk, consecutive lanes on different rows — so both hit this columnar
+pattern and both need the same XOR.  (The only genuinely contiguous,
+conflict-free reads in the kernel are the within-chunk 16-byte run a
+single lane grabs, and the coalesced GMEM→SMEM staging copy — neither is
+what the swizzle protects.)
+
 ## Aside — swizzle is keyed off the *absolute* SMEM offset
 
 A subtlety that costs people hours.  The XOR amount isn't derived from
@@ -316,9 +417,14 @@ over all 512 elements.
   **bank-conflict-free**; `tcgen05.mma` requires it.
 * TMA applies the swizzle on arrival — one descriptor field, zero extra
   instructions.
-* 128B swizzle for BF16 permutes eight 16-byte chunks per row by
-  `chunk XOR (row mod 8)`.  Row 0 is unchanged; row 7 is fully
-  reversed.
+* 128B swizzle permutes **16-byte chunks** (the unit, dtype-independent
+  — 8 BF16, 4 banks) **within each 128-byte row** (the window — 8
+  chunks, 32 banks), keyed by the row index: `chunk XOR (row mod 8)`.
+  Row 0 is unchanged; row 7 is fully reversed.
+* That permutation is exactly what makes the read conflict-free: 8
+  `ldmatrix` lanes asking for the same logical chunk of 8 different rows
+  land on 8 distinct 4-bank groups (the table's diagonal), covering all
+  32 banks in one cycle instead of stacking on 4.
 * The XOR key is the **absolute** SMEM offset, so a tile that doesn't
   start at a 1024-byte boundary sees a rotated pattern — harmless for
   real kernels (the MMA descriptor uses the same address), but a trap
