@@ -26,6 +26,24 @@ still serialize at the single shared mbar.  Together they unlock
 overlap — this is the single highest-impact step in the ladder,
 roughly **2× throughput** in our measurements below.
 
+### Aside — multi-stage predates warp specialization
+
+Worth knowing: multi-stage buffering as a *technique* is older than
+warp specialization.  On Ampere/Hopper it was a single-warp pattern:
+one warp's instruction stream issued `cp.async` for tile `k + N` while
+running a warp-collective synchronous `mma.sync` on tile `k`.  The
+async-ness lived only on the load side; the compute side stayed
+synchronous and register-bound, so the load and compute paths
+naturally interleaved inside one warp.
+
+Blackwell *could* in principle keep that single-warp interleaved
+structure (`tcgen05.mma` is async too — one thread issues it and moves
+on).  But Blackwell's design — async MMA, accumulator in TMEM instead
+of registers, mbarrier-shaped dependencies — naturally favours
+splitting producer and consumer into their own warps.  So multi-stage
+is the older, more fundamental idea; warp specialization is the way
+Blackwell expresses it, and we follow the Blackwell-native pattern.
+
 ```
    chapter 03 (1 slot):     │TMA│       │TMA│       │TMA│
                                     │MMA│      │MMA│      │MMA│
