@@ -25,6 +25,18 @@ from cuda_utils import (
 
 from cuda.bindings import driver
 
+# Optional: import the b42_gsm production kernel from mymatmul for a
+# third comparison column.  Diagnostic / debugging use — not part of
+# the chapter's user-facing story.  If pycuda or the mymatmul tree
+# isn't available the b42 column is just skipped silently.
+try:
+    sys.path.insert(0, "/data/home/tong/projects/mymatmul")
+    from mymatmul.gpu.blackwell.matmul_b42_gsm import matmul_b42_gsm  # noqa
+    HAS_B42 = True
+except Exception as _e:
+    HAS_B42 = False
+    print(f"(b42 unavailable: {_e})")
+
 
 BM, BN, BK    = 128, 256, 64
 CTA_GROUP     = 2
@@ -33,9 +45,9 @@ WARP_SIZE     = 32
 ELEM_BYTES    = 2
 NS_SWEEP      = [3, 4, 5, 6, 7]
 GSM_SWEEP     = [1, 4, 8, 16]
-NW_SWEEP      = [4, 8]
+NW_SWEEP      = [8]      # NW=4 dropped — NW=8 wins more consistently and
 LDX_SWEEP     = [8, 16, 32, 64]
-SHAPES        = list(range(2048, 10240 + 1, 1024))   # 9 shapes
+SHAPES        = list(range(2048, 8192 + 1, 1024))    # 7 shapes
 
 A_SLOT_BYTES  = BM       * BK * ELEM_BYTES
 B_SLOT_BYTES  = BN_LOCAL * BK * ELEM_BYTES
@@ -210,22 +222,52 @@ def time_pytorch_median(A, B, n_batches=11, iters=20):
     return times_us[len(times_us) // 2]
 
 
+def time_b42_median(A, B, n_batches=11, iters=20):
+    """mymatmul/b42_gsm production kernel, same methodology.
+
+    First call autotunes b42's own (BN, BK, NS, GSM) sweep over its
+    5 base configs × 4 GSMs.  Subsequent calls dispatch to the cached
+    winner.  We then time those dispatches the same way we time
+    cuBLAS / our autotuned kernel.
+    """
+    # warmup + autotune b42's internal cache for this shape
+    for _ in range(2):
+        _ = matmul_b42_gsm(A, B)
+    torch.cuda.synchronize()
+    times_us = []
+    for _ in range(n_batches):
+        invalidate_l2()
+        torch.cuda.synchronize()
+        start = torch.cuda.Event(enable_timing=True)
+        end   = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(iters):
+            _ = matmul_b42_gsm(A, B)
+        end.record()
+        torch.cuda.synchronize()
+        times_us.append(start.elapsed_time(end) / iters * 1e3)
+    times_us.sort()
+    return times_us[len(times_us) // 2]
+
+
 # ── 5. Sweep all shapes ────────────────────────────────────────────────────
 tuner = Autotuner(kernels)
 
-print(f"\nAutotuning {len(SHAPES)} shapes against PyTorch (cuBLAS):\n")
-print(f"  {'shape':<8}  {'tune (s)':>8}  {'best (NS, GSM, NW, LDX)':<25}  "
-      f"{'TFLOPS':>7}  {'cuBLAS':>7}  {'ratio':>6}")
-print(f"  {'─'*8}  {'─'*8}  {'─'*25}  {'─'*7}  {'─'*7}  {'─'*6}")
+b42_col = "  b42  " if HAS_B42 else ""
+b42_sep = "  ─────" if HAS_B42 else ""
+
+print(f"\nAutotuning {len(SHAPES)} shapes vs. PyTorch (cuBLAS)"
+      + (" and mymatmul/b42_gsm" if HAS_B42 else "") + ":\n")
+print(f"  {'shape':<8}  {'best (NS, GSM, NW, LDX)':<25}  "
+      f"{'ours':>7}  {'cuBLAS':>7}{b42_col}  {'ratio*':>6}")
+print(f"  {'─'*8}  {'─'*25}  {'─'*7}  {'─'*7}{b42_sep}  {'─'*6}")
 
 results = []
 for sz in SHAPES:
     M = N = K = sz
     A, B, C, args, grid = setup(M, N, K)
 
-    t0 = time.time()
     kern, cfg = tuner.pick(M, N, K, args, grid)
-    tune_s = time.time() - t0
     ns, gsm, nw, ldx = cfg
 
     # Correctness check
@@ -235,22 +277,34 @@ for sz in SHAPES:
     C_ref = (A.float() @ B.float()).to(torch.bfloat16)
     rel = (C.float() - C_ref.float()).abs().max().item() / C_ref.float().abs().max().item()
 
-    # Final, well-warmed median timing.
+    # Final, well-warmed median timings with L2 flush.
     us_ours = time_median(kern, nw * WARP_SIZE, shared_for(ns),
                           args, grid, n_batches=11, iters=50)
     us_pt   = time_pytorch_median(A, B)
     flops   = 2.0 * M * N * K
     tf_ours = flops / (us_ours * 1e-6) / 1e12
     tf_pt   = flops / (us_pt   * 1e-6) / 1e12
-    ratio   = tf_ours / tf_pt
 
+    us_b42 = None
+    tf_b42 = None
+    b42_field = ""
+    if HAS_B42:
+        try:
+            us_b42 = time_b42_median(A, B)
+            tf_b42 = flops / (us_b42 * 1e-6) / 1e12
+            b42_field = f"  {tf_b42:>5.0f}"
+        except Exception as e:
+            b42_field = f"  err: {type(e).__name__}"
+
+    ratio   = tf_ours / tf_pt
     cfg_str = f"({ns}, {gsm}, {nw}, {ldx})"
     flag = "✓" if rel < 1e-1 else "✗"
-    print(f"  {sz}^3   {tune_s:>7.1f}s  {cfg_str:<25}  "
-          f"{tf_ours:>7.1f}  {tf_pt:>7.1f}  {flag} {ratio:>4.0%}")
+    print(f"  {sz}^3   {cfg_str:<25}  "
+          f"{tf_ours:>7.1f}  {tf_pt:>7.1f}{b42_field}  {flag} {ratio:>4.0%}")
 
-    results.append((sz, ns, gsm, nw, ldx, rel, us_ours, tf_ours, us_pt, tf_pt))
+    results.append((sz, ns, gsm, nw, ldx, rel, us_ours, tf_ours, us_pt, tf_pt, us_b42, tf_b42))
 
+print("  * ratio = ours / cuBLAS")
 print()
 
 
