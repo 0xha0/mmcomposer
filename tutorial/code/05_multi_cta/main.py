@@ -117,7 +117,7 @@ def run_and_time(M, N, K, iters=200, warmup=20):
 
 
 # ── 2. Run two problem sizes ───────────────────────────────────────────────
-for (M, N, K) in [(2048, 2048, 2048), (4096, 4096, 4096)]:
+for (M, N, K) in [(2048, 2048, 2048), (4096, 4096, 4096), (8192, 8192, 8192)]:
     r = run_and_time(M, N, K)
     ok = "✓" if r["rel"] < 5e-2 else "✗"
     print(f"{ok}  M=N=K={M:>4}   grid={r['grid'][0]}×{r['grid'][1]}={r['grid'][0]*r['grid'][1]} CTAs   rel err={r['rel']:.2%}")

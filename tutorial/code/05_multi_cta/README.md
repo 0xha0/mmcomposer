@@ -82,16 +82,23 @@ parked.  With a full grid the SMs actually fill up.  Measured on B200
 
 | shape (M, N, K) | grid | this kernel | PyTorch `A @ B` (cuBLAS) | us / cuBLAS |
 |---|---|---|---|---|
-| `2048³` | 16 × 8 = 128 CTAs (one wave) | **535 TFLOPS** | 1277 TFLOPS | **42%** |
-| `4096³` | 32 × 16 = 512 CTAs (multi-wave) | **786 TFLOPS** | 1534 TFLOPS | **51%** |
+| `2048³` | 16 × 8 = 128 CTAs (one wave) | **537 TFLOPS** | 1277 TFLOPS | **42%** |
+| `4096³` | 32 × 16 = 512 CTAs (multi-wave) | **786 TFLOPS** | 1536 TFLOPS | **51%** |
+| `8192³` | 64 × 32 = 2048 CTAs (many waves) | **797 TFLOPS** | 1264 TFLOPS | **63%** |
 
-From ~6 TFLOPS (ch04, single CTA) to **786 TFLOPS** — roughly **130×**
+From ~6 TFLOPS (ch04, single CTA) to **~800 TFLOPS** — roughly **130×**
 just from sizing the grid to the problem.
+
+Notice the **us / cuBLAS** ratio improves with problem size (42% → 51%
+→ 63%).  Larger shapes amortize per-tile setup and the still-uncoalesced
+epilogue over more inner-loop compute, so the inner-loop limitations
+(naive walk, no 2-CTA cluster) become a larger share of the remaining
+gap.  That's the territory the next chapters operate in.
 
 We're not at parity yet — `cuBLAS` (what PyTorch calls under the hood)
 uses CTA-tile swizzling for L2 reuse on A, 2-CTA cluster MMA, and a
-coalesced SMEM-staged epilogue.  Closing that ~2× gap is the business
-of the next several chapters; this one just gets the absolute numbers
+coalesced SMEM-staged epilogue.  Closing the gap is the business of
+the next several chapters; this one just gets the absolute numbers
 off the floor and onto the same order of magnitude as the production
 library.
 
