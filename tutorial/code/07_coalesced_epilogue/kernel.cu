@@ -25,20 +25,22 @@ constexpr int BK      = 64;
 constexpr int MMA_K   = 16;
 constexpr int K_MMAS  = BK / MMA_K;          // 4
 
-constexpr int NS            = 2;             // multi-stage depth
-constexpr int BF16_BYTES = 2;             // byte size of the operand element
+constexpr int NS                = 2;        // multi-stage depth
+constexpr int BF16_BYTES        = 2;        // byte size of the operand element
+constexpr int SWIZZLE_ROW_BYTES = 128;      // one 128B-swizzle atom row
 
 // ── SWIZZLE_128B constraint on K-major B ────────────────────────────
 //
 // TMA with SWIZZLE_128B requires the box's INNERMOST dimension to be
-// exactly 128 bytes wide — one swizzle atom.  For native (K, N)
-// row-major B, N is the contiguous dim, so the inner box covers N
-// and must be capped at 64 BF16 (= 128 B).  Loading the full BN
-// requires BN/64 sub-tile TMA calls, each writing into a different
-// SMEM offset.  (Ch05 dodged this by host-transposing B so K — also
-// 64 BF16 — was the inner dim.)
+// exactly SWIZZLE_ROW_BYTES (= 128 B) — one swizzle atom.  For native
+// (K, N) row-major B, N is the contiguous dim, so the inner box covers
+// N and must be capped at SWIZZLE_ROW_BYTES / BF16_BYTES = 64 BF16.
+// Loading the full BN requires BN / 64 sub-tile TMA calls, each
+// writing into a different SMEM offset.  (Ch05 dodged this by
+// host-transposing B so K — also 64 BF16 — was the inner dim.)
 //
-// 64 below is therefore not a free parameter; it's `128 / BF16_BYTES`.
+// The literal 64 below is therefore not a free parameter; it's
+// `SWIZZLE_ROW_BYTES / BF16_BYTES`.
 
 constexpr int A_SLOT_BYTES = BM * BK * BF16_BYTES;     // 16 KB
 constexpr int B_SLOT_BYTES = BN * BK * BF16_BYTES;     // 32 KB
@@ -280,16 +282,16 @@ extern "C" __global__ void matmul_coalesced_epilogue(
             #pragma unroll
             for (int kk = 0; kk < K_MMAS; kk++) {
                 // A K-step = MMA_K elements = MMA_K * BF16_BYTES bytes,
-                // walking within one 128-B SMEM row.
+                // walking within one swizzle atom row.
                 const uint64_t a_desc = make_desc(
                     A_base(slot) + kk * MMA_K * BF16_BYTES);
-                // K-major B: addr points at sub-tile 0, K-row kk*MMA_K;
-                // LBO = BK rows × one 128-B swizzle atom = BK * 64 *
-                // BF16_BYTES — tells MMA hardware how to walk to
-                // sub-tiles 1..3.
+                // K-major B: addr points at sub-tile 0, K-row kk*MMA_K
+                // (each K-row is one swizzle atom).  LBO = BK rows ×
+                // one swizzle atom — tells MMA how to walk to sub-tiles
+                // 1..3.
                 const uint64_t b_desc = make_desc_K_major(
-                    B_base(slot) + kk * MMA_K * (64 * BF16_BYTES),
-                    BK * (64 * BF16_BYTES));
+                    B_base(slot) + kk * MMA_K * SWIZZLE_ROW_BYTES,
+                    BK * SWIZZLE_ROW_BYTES);
                 const bool first_ever = (k == 0) && (kk == 0);
                 tcgen05_mma(taddr, a_desc, b_desc, idesc, /*enable_d=*/ !first_ever);
             }
