@@ -233,11 +233,10 @@ extern "C" __global__ void tcgen05_demo(
 
     // ── 6) TMEM → registers → GMEM (direct, uncoalesced) ────────────
     //
-    // Ownership — **each thread owns one entire output row**:
+    // **Each thread owns one entire output row.**
     //
-    //     thread t  (warp w, lane l)  →  TMEM row (w*32 + l), all N cols
-    //     warp w                       →  32 rows × all N cols
-    //     4 warps × 32 lanes           →  M=128 rows × N=256 = whole C
+    //     each warp           →  32 rows × all N cols
+    //     4 warps × 32 lanes  →  M=128 rows × N=256 = whole C
     //
     // TMEM here is an M × N grid of FP32 accumulators.  Address
     // encoding: bits [31:16] = row, bits [15:0] = col, so
