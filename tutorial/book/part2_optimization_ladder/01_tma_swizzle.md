@@ -132,6 +132,10 @@ XOR 2 → flip middle bit:
         010  011  000  001  110  111  100  101
       =  2    3    0    1    6    7    4    5
 
+XOR 3 → flip last two bits:
+        011  010  001  000  111  110  101  100
+      =  3    2    1    0    7    6    5    4
+
 XOR 4 → flip top bit:
         100  101  110  111  000  001  010  011
       =  4    5    6    7    0    1    2    3     (halves swapped)
@@ -142,8 +146,35 @@ XOR 7 → flip all three:
 ```
 
 A composite key like `XOR 3` (`011`) just flips the last two bits at
-once, giving row 3's `3 2 1 0 7 6 5 4`.  Each row's permutation is fully
-determined by which bits of `(row mod 8)` are set.
+once (last + middle), which is why it looks like `XOR 1` and `XOR 2`
+applied together.  Each row's permutation is fully determined by which
+bits of `(row mod 8)` are set.
+
+### Does the pattern depend on the dtype?
+
+No — and this is the useful part.  128B swizzle is defined on the
+**byte address**, not on elements.  Its unit is a fixed **16-byte
+chunk** (= 4 banks), and a 128-byte swizzle row is always 8 such chunks.
+The permutation `chunk XOR (row mod 8)` is therefore *identical* for
+FP8, BF16/FP16, and FP32.  The only thing the dtype changes is how many
+elements ride inside each 16-byte chunk:
+
+| dtype        | bytes/elem | elems per 16B chunk | elems per 128B row |
+|--------------|:----------:|:-------------------:|:------------------:|
+| FP8 / int8   | 1          | 16                  | 128                |
+| BF16 / FP16  | 2          | 8                   | 64                 |
+| TF32 / FP32  | 4          | 4                   | 32                 |
+
+So the eight-way chunk shuffle drawn above is exactly what you'd see at
+any precision; switch to FP32 and each cell of the table just holds 4
+elements instead of 8, and a full swizzle row spans 32 columns instead
+of 64.  Practically this means the K-tile width that fills one swizzle
+atom scales with the dtype: 64 K for BF16, but 128 K for FP8 and 32 K
+for FP32.
+
+(The `32B` and `64B` swizzle modes are likewise byte-defined — they
+permute 2 and 4 chunks respectively. Picking a mode is about how wide a
+conflict-free region the consumer needs, never about the dtype.)
 
 ## Seeing it on real hardware
 
