@@ -381,9 +381,12 @@ const int phys = lg ^ ((ar / A_SHIFT) % A_SWZ);
 
 **`tcgen05.mma` (Blackwell path).**  There are *no* operand registers and
 *no* `ldmatrix`.  A single instruction computes a whole tile —
-`M = 128` (or 256 across a 2-CTA cluster) × `N ≤ 256` × `K = 16` for
-16-bit — and the tensor core reads the operand slabs straight from SMEM,
-addressed by a 64-bit **matrix descriptor**.  The swizzle is one field
+`M = 128` (or 256 across a 2-CTA cluster) × `N ≤ 256` × **`K` per
+instruction that depends on the operand dtype** (16 for 16-bit BF16/FP16,
+32 for 8-bit FP8/INT8, 8 for TF32 — `K` scales inversely with the byte
+width so the MMA always contracts a ~32-byte K-strip per M-row).  The
+tensor core reads the operand slabs straight from SMEM, addressed by a
+64-bit **matrix descriptor**.  The swizzle is one field
 of that descriptor, so the hardware does all the XOR addressing
 internally — the kernel never computes a swizzled index.
 
@@ -422,7 +425,7 @@ which a swizzled read is conflict-free.
 | role of 8×8 | register-load fragment | SMEM core matrix |
 | who reads SMEM | 32 warp lanes | tensor-core read ports |
 | swizzle applied by | software (you write the XOR) | hardware (descriptor field) |
-| per-instruction shape | `m16n8k16`-ish | `M128 × N≤256 × K16` |
+| per-instruction shape | `m16n8k16`-ish | `M128 × N≤256 × K_dtype` (K=16 for BF16, 32 for FP8, …) |
 
 Building that matrix descriptor — base address, `SBO`, swizzle field,
 plus the instruction-shape `idesc` — is exactly what the next chapter
