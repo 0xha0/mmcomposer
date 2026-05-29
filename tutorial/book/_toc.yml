@@ -27,18 +27,6 @@ parts:
       - file: part2_optimization_ladder/10_epilogue_tune
       - file: part2_optimization_ladder/11_hoist_desc
       - file: part2_optimization_ladder/12_autotune
-      - file: part2_optimization_ladder/01_blocked_tiling
-      - file: part2_optimization_ladder/02_smem_staging
-      - file: part2_optimization_ladder/03_cp_async
-      - file: part2_optimization_ladder/04_tma_2d
-      - file: part2_optimization_ladder/05_multi_stage_buffering
-      - file: part2_optimization_ladder/06_tcgen05
-      - file: part2_optimization_ladder/07_warp_spec
-      - file: part2_optimization_ladder/08_tma_3d
-      - file: part2_optimization_ladder/09_two_cta_cluster
-      - file: part2_optimization_ladder/10_cta_swizzle
-      - file: part2_optimization_ladder/11_epilogue_warps
-      - file: part2_optimization_ladder/12_autotune
 
   - caption: "Part 3 — Autotuning"
     chapters:
