@@ -75,29 +75,29 @@ for (int n = col_base; n < col_end; n += LD_X) {
 ## Performance sweep
 
 `M = N = K = 8192`, `NS = 5`, `GSM = 8` (best from ch09).  Full
-`NUM_WARPS × LD_X` cross:
+`NUM_WARPS × LD_X` cross, measured via `triton.testing.do_bench`:
 
 | | `x8` | `x16` | `x32` | `x64` |
 |---|---|---|---|---|
-| **4 warps** | **1333** | 1308 | 1256 | 1279 |
-| 8 warps     | 1305     | 1249 | 1294 | 1301 |
+| **4 warps** | **1428** | 1409 | 1390 | 1396 |
+| 8 warps     | 1389     | 1389 | 1391 | 1393 |
 
 (TFLOPS, higher is better.  ch09's reference at the same `(NS, GSM)`
-was ~1225 TFLOPS, so the whole table sits within run-to-run noise of
+was 1352 TFLOPS, so the whole table sits within run-to-run noise of
 that baseline.)
 
 ## Interpretation — the K-loop dominates at this shape
 
-The full sweep clusters within ~7% (1249–1333), and the **default
+The full sweep clusters within ~3 % (1389–1428), and the **default
 4-warp / `.x8` configuration is the best**.  Surprising at first — why
 don't more warps or wider loads help?
 
 Because at `K = 8192`, the K-loop runs **128 iterations per CTA**
 before the epilogue runs once.  The K-loop is bound by TMA bandwidth
-and tensor-core throughput, both of which are already at near-peak
-utilization (we're at ~97 % of cuBLAS).  The epilogue is a small
-fraction of total runtime — even a 50 % epilogue speedup would barely
-register in end-to-end TFLOPS.
+and tensor-core throughput, both of which are already near-peak
+utilization (we're around 95 % of cuBLAS at this point in the ladder).
+The epilogue is a small fraction of total runtime — even a 50 %
+epilogue speedup would barely register in end-to-end TFLOPS.
 
 You can roughly read each cell as "kernel time" with the epilogue
 substituted for that config.  Differences between cells are
