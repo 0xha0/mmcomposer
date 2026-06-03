@@ -286,3 +286,35 @@ def launch(kernel, *, grid, block, shared: int, args: list, stream: int = 0,
     ))
     if sync:
         cu(driver.cuCtxSynchronize())
+
+
+# ── Timing ──────────────────────────────────────────────────────────────────
+
+def time_kernel_us(call_fn, warmup_ms: int = 20, rep_ms: int = 200) -> float:
+    """Median per-call time of `call_fn` in microseconds.
+
+    Thin wrapper around `triton.testing.do_bench`.  Used by every
+    chapter's main.py to time kernel launches consistently:
+
+    - do_bench flushes a 256 MB scratch buffer through L2 between
+      samples, so each measurement reflects cold-cache first-call
+      behaviour (not warm-L2 steady-state).
+    - It picks its own iter count adaptively to fit `rep_ms`, so fast
+      and slow kernels are timed over comparable wall-clock budgets.
+    - It returns quantiles so we get median, min, max for free.
+
+    `call_fn` should perform exactly one kernel launch (or operation)
+    per call.  Pass `sync=False` to your `launch(...)` inside `call_fn`
+    — do_bench handles the synchronization itself.
+
+    Triton is available as a transitive dependency of PyTorch on any
+    GPU install, so this doesn't add a new top-level dependency.
+    """
+    import triton.testing  # lazy import — only chapters that time pay the cost
+    ms_med, _, _ = triton.testing.do_bench(
+        call_fn,
+        warmup=warmup_ms,
+        rep=rep_ms,
+        quantiles=(0.5, 0.0, 1.0),
+    )
+    return ms_med * 1000.0
