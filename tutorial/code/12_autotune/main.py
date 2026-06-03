@@ -26,20 +26,6 @@ from cuda_utils import (
 
 from cuda.bindings import driver
 
-# Optional: import the b42_gsm production kernel from mymatmul for a
-# third comparison column.  Diagnostic / debugging use — not part of
-# the chapter's user-facing story.  If pycuda or the mymatmul tree
-# isn't available the b42 column is just skipped silently.
-try:
-    sys.path.insert(0, "/data/home/tong/projects/mymatmul")
-    from mymatmul.gpu.blackwell.matmul_b42_gsm import matmul_b42_gsm  # noqa
-    from mymatmul.gpu.blackwell import matmul_b42_gsm as _b42_mod
-    HAS_B42 = True
-except Exception as _e:
-    HAS_B42 = False
-    print(f"(b42 unavailable: {_e})")
-
-
 BM, BN, BK    = 128, 256, 64
 CTA_GROUP     = 2
 BN_LOCAL      = BN // CTA_GROUP
@@ -197,33 +183,13 @@ def time_pytorch_us(A, B, warmup_ms=20, rep_ms=200):
     return ms_med * 1000.0
 
 
-def time_b42_us(A, B, warmup_ms=20, rep_ms=200):
-    """mymatmul/b42_gsm via do_bench.  First call triggers b42's own
-    internal autotune over (BN, BK, NS, GSM); subsequent calls dispatch
-    to the cached winner."""
-    # Trigger b42's internal autotune for this shape (its first call is
-    # the autotuner; we want it primed before timing).
-    _ = matmul_b42_gsm(A, B)
-    torch.cuda.synchronize()
-    ms_med, _, _ = triton.testing.do_bench(
-        lambda: matmul_b42_gsm(A, B),
-        warmup=warmup_ms, rep=rep_ms, quantiles=(0.5, 0.0, 1.0))
-    return ms_med * 1000.0
-
-
 # ── 5. Sweep all shapes ────────────────────────────────────────────────────
 tuner = Autotuner(kernels)
 
-b42_cfg_col = "  b42 (BN,BK,NS,GSM) " if HAS_B42 else ""
-b42_tf_col  = "    b42  " if HAS_B42 else ""
-b42_cfg_sep = "  ───────────────────" if HAS_B42 else ""
-b42_tf_sep  = "    ─────" if HAS_B42 else ""
-
-print(f"\nAutotuning {len(SHAPES)} shapes vs. PyTorch (cuBLAS)"
-      + (" and mymatmul/b42_gsm" if HAS_B42 else "") + ":\n")
-print(f"  {'shape':<8}  {'ch12 (NS, GSM, NW, LDX)':<26}{b42_cfg_col}  "
-      f"{'ch12':>6}  {'cuBLAS':>7}{b42_tf_col}  {'ratio*':>6}")
-print(f"  {'─'*8}  {'─'*26}{b42_cfg_sep}  {'─'*6}  {'─'*7}{b42_tf_sep}  {'─'*6}")
+print(f"\nAutotuning {len(SHAPES)} shapes vs. PyTorch (cuBLAS):\n")
+print(f"  {'shape':<8}  {'best (NS, GSM, NW, LDX)':<26}  "
+      f"{'ours':>6}  {'cuBLAS':>7}  {'ratio*':>6}")
+print(f"  {'─'*8}  {'─'*26}  {'─'*6}  {'─'*7}  {'─'*6}")
 
 results = []
 for sz in SHAPES:
@@ -250,33 +216,13 @@ for sz in SHAPES:
     tf_ours = flops / (us_ours * 1e-6) / 1e12
     tf_pt   = flops / (us_pt   * 1e-6) / 1e12
 
-    us_b42 = None
-    tf_b42 = None
-    b42_cfg_str = ""
-    b42_tf_field = ""
-    if HAS_B42:
-        try:
-            us_b42 = time_b42_us(A, B, warmup_ms=50, rep_ms=500)
-            tf_b42 = flops / (us_b42 * 1e-6) / 1e12
-            b42_tf_field = f"    {tf_b42:>5.0f}"
-            # Read which config b42's internal autotuner picked.
-            b42_cfg = _b42_mod._best.get((M, N, K))
-            if b42_cfg is not None:
-                bbn, bbk, bns, bgsm = b42_cfg
-                b42_cfg_str = f"  ({bbn:3d},{bbk:3d},{bns:1d},{bgsm:2d})  "
-            else:
-                b42_cfg_str = "  (?, ?, ?, ?)        "
-        except Exception as e:
-            b42_tf_field = f"    err"
-            b42_cfg_str = f"  err: {type(e).__name__:14s}"
-
     ratio   = tf_ours / tf_pt
     cfg_str = f"({ns}, {gsm}, {nw}, {ldx})"
     flag = "✓" if rel < 1e-1 else "✗"
-    print(f"  {sz}^3   {cfg_str:<26}{b42_cfg_str}  "
-          f"{tf_ours:>6.0f}  {tf_pt:>7.1f}{b42_tf_field}  {flag} {ratio:>4.0%}")
+    print(f"  {sz}^3   {cfg_str:<26}  "
+          f"{tf_ours:>6.0f}  {tf_pt:>7.1f}  {flag} {ratio:>4.0%}")
 
-    results.append((sz, ns, gsm, nw, ldx, rel, us_ours, tf_ours, us_pt, tf_pt, us_b42, tf_b42))
+    results.append((sz, ns, gsm, nw, ldx, rel, us_ours, tf_ours, us_pt, tf_pt))
 
 print("  * ratio = ours / cuBLAS")
 print()
