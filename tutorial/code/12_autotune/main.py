@@ -33,7 +33,9 @@ ELEM_BYTES    = 2
 NS_SWEEP      = [3, 4, 5, 6, 7]
 GSM_SWEEP     = [1, 4, 8, 16]
 NW_SWEEP      = [8]      # NW=4 dropped — NW=8 wins more consistently and
-LDX_SWEEP     = [8, 16, 32, 64]
+LDX_SWEEP     = [8]      # LDX is within ~1%% noise across {8,16,32,64} at
+                         # every shape we tested — see probe_ldx.py.  Pruning
+                         # it cuts the autotune search 4x with no quality loss.
 SHAPES        = list(range(2048, 12288 + 1, 1024))   # 11 shapes
 
 A_SLOT_BYTES  = BM       * BK * ELEM_BYTES

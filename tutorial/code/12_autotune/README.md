@@ -5,24 +5,32 @@
 By the end of chapter 11 our kernel has accumulated four template
 parameters worth tuning:
 
-| knob | values explored | introduced in |
-|---|---|---|
-| `NS` (multi-stage depth)         | 3, 4, 5, 6, 7    | ch04 / ch08 |
-| `GROUP_SIZE_M` (CTA swizzle)     | 1, 4, 8, 16      | ch09 |
-| `NUM_WARPS` (epilogue warps)     | 4, 8             | ch10 |
-| `LD_X` (`tcgen05.ld` packing)    | 8, 16, 32, 64    | ch10 |
+| knob | values explored | introduced in | actually tuned? |
+|---|---|---|---|
+| `NS` (multi-stage depth)         | 3, 4, 5, 6, 7    | ch04 / ch08 | ✓ |
+| `GROUP_SIZE_M` (CTA swizzle)     | 1, 4, 8, 16      | ch09 | ✓ |
+| `NUM_WARPS` (epilogue warps)     | 4, 8             | ch10 | held at 8 |
+| `LD_X` (`tcgen05.ld` packing)    | 8, 16, 32, 64    | ch10 | held at 8 |
 
-Every previous chapter pinned them at fixed values "tuned at 8192³".
-This chapter does the obvious next thing: **the best config varies by
-problem shape, so let's pick the right one per call.**
+`NUM_WARPS` was pruned in earlier diagnostic runs (NW = 8 wins or ties
+NW = 4 at every shape — see ch10).  `LD_X` turned out to be within
+~1 % noise across all four values at every shape (see
+[`probe_ldx.py`](probe_ldx.py)) — pruning it cuts the autotune search
+4× with no quality loss.  What's left to tune is the
+`(NS, GROUP_SIZE_M)` cross product.
+
+Every previous chapter pinned the tunable knobs at fixed values "tuned
+at 8192³".  This chapter does the obvious next thing: **the best
+config varies by problem shape, so let's pick the right one per call.**
 
 ## The pattern
 
 Three pieces, total ~30 lines of Python:
 
-1. **Compile** the cross product of `(NS, GSM, NW, LDX)` variants at
-   startup — for our chapter that's `5 × 4 × 1 × 4 = 80` kernel
-   functions in one `kernel.cu`.
+1. **Compile** the cross product of `(NS, GSM)` variants at startup —
+   for our chapter that's `5 × 4 = 20` kernel functions in one
+   `kernel.cu` (the `NUM_WARPS` and `LD_X` axes are held at their
+   default values).
 2. **Time** each variant for the requested shape with
    `triton.testing.do_bench` and pick the fastest.
 3. **Cache** the winner keyed by `(M, N, K)` so subsequent calls at
@@ -100,7 +108,7 @@ ranking configs that can't differ except by measurement noise:
 ```python
 grid_m_clusters = M // (CTA_GROUP * BM)
 for cfg, kern in self.kernels.items():
-    ns, gsm, nw, ldx = cfg
+    ns, gsm = cfg
     if gsm > grid_m_clusters:    # would be clamped → skip
         continue
     ...
@@ -109,47 +117,79 @@ for cfg, kern in self.kernels.items():
 **General lesson: before timing a variant, check whether the kernel
 can actually distinguish it from a variant you're already timing.**
 
+## When a knob isn't really a knob
+
+We started with four candidate tunables (`NS`, `GSM`, `NW`, `LD_X`).
+Two of them turned out not to be worth autotuning:
+
+- **`NUM_WARPS = 8`** wins or ties `4` at every shape we measured
+  (see ch10).  We hold it at `8`.
+- **`LD_X`** is within ~1 % across `{8, 16, 32, 64}` at every shape —
+  see [`probe_ldx.py`](probe_ldx.py).  Run it yourself: the spread is
+  0.1–1.7 % shape-by-shape, well below the autotuner's tournament noise
+  floor.  We hold it at `8`.
+
+The signature of an irrelevant tunable is that the autotuner picks
+different values for it across runs at the same shape.  When we first
+benchmarked with all four knobs in the sweep, `LD_X` picks looked
+like:
+
+| shape | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| 8192³ | 32 | 64 | 64 |
+| 10240³ | 8 | 64 | 16 |
+| 12288³ | 8 | 64 | 64 |
+
+If `LD_X` had a meaningful effect, the same shape would reliably pick
+the same `LD_X`.  Instead the autotuner grabs whatever happens to be
+measurement-fastest in that tournament, which means it's ranking
+noise — wasted autotune budget.  Pruning `LD_X` cuts the search 4×
+without losing perf.
+
+That leaves `NS × GSM = 5 × 4 = 20` configs to tune.
+
 ## Per-shape results
 
 Sweep `M = N = K ∈ {2048, 3072, …, 12288}` (11 shapes).  Measured on
 B200; PyTorch matmul as the cuBLAS baseline.
 
-| shape  | best (NS, GSM, NW, LDX) | **ours TFLOPS** | cuBLAS | ratio |
+| shape  | best (NS, GSM) | **ours TFLOPS** | cuBLAS | ratio |
 |---|---|---|---|---|
-| 2048³  | (5, 1, 8, 16)   |  **802** |  879 |  91 % |
-| 3072³  | (6, 1, 8,  8)   | **1226** | 1377 |  89 % |
-| 4096³  | (6, 1, 8,  8)   | **1209** | 1354 |  89 % |
-| 5120³  | (6, 8, 8, 32)   | **1254** | 1385 |  90 % |
-| 6144³  | (6, 16, 8, 8)   | **1297** | 1407 |  92 % |
-| 7168³  | (6, 8, 8, 16)   | **1313** | 1381 |  95 % |
-| 8192³  | (5, 8, 8, 32)   | **1313** | 1389 |  95 % |
-| 9216³  | (6, 8, 8, 16)   | **1317** | 1349 |  98 % |
-| 10240³ | (7, 8, 8,  8)   | **1319** | 1334 |  99 % |
-| 11264³ | (6, 8, 8,  8)   | **1347** | 1325 | 102 % |
-| 12288³ | (5, 8, 8,  8)   | **1306** | 1428 |  91 % |
+| 2048³  | (5, 1)  |  **798** |  877 |  91 % |
+| 3072³  | (6, 1)  | **1259** | 1452 |  87 % |
+| 4096³  | (7, 1)  | **1278** | 1412 |  90 % |
+| 5120³  | (7, 4)  | **1317** | 1463 |  90 % |
+| 6144³  | (5, 8)  | **1377** | 1485 |  93 % |
+| 7168³  | (7, 8)  | **1370** | 1453 |  94 % |
+| 8192³  | (5, 8)  | **1386** | 1424 |  97 % |
+| 9216³  | (6, 8)  | **1386** | 1426 |  97 % |
+| 10240³ | (6, 8)  | **1393** | 1441 |  97 % |
+| 11264³ | (6, 8)  | **1400** | 1431 |  98 % |
+| 12288³ | (5, 8)  | **1401** | 1482 |  95 % |
 
 Three things to read off:
 
-- **The picked config varies by shape.** No single `(NS, GSM, NW, LDX)`
-  is optimal everywhere — that's the whole point of autotuning.
+- **The picked config varies by shape.** No single `(NS, GSM)` is
+  optimal everywhere — that's the whole point of autotuning.  Small
+  shapes prefer `GSM = 1` (the chunked walk has no L2 reuse to give
+  it); large shapes consolidate on `GSM = 8`.
 - **`NS ∈ {5, 6, 7}` always wins.** Shallow stages (`NS = 3, 4`)
   never show up across this sweep, so they'd be a candidate to drop
   from a production search space.  We keep them in this chapter's
   sweep so the autotuner has a wider space to demonstrate over.
 - **Larger shapes hit higher ratios.** At small shapes (2K-6K) per-CTA
   setup overhead is a bigger fraction of each kernel's wall-clock;
-  from 7K up the kernel reaches its compute-bound plateau (~1300
-  TFLOPS, 96-98 % of cuBLAS).
+  from 7K up the kernel reaches its compute-bound plateau
+  (~1380-1400 TFLOPS, 94-98 % of cuBLAS).
 
 ## Cost
 
-- **First-call autotune** at 10K-12K takes ~20 seconds because each
-  config samples non-trivially-long calls; smaller shapes finish in a
-  few seconds.  Subsequent calls at the same shape are essentially
-  free (cache hit).
-- **The 80-variant nvcc compile** takes a couple of minutes on a cold
-  run.  `nvcc` caches cubins by mtime, so subsequent runs of an
-  unchanged kernel start instantly.
+- **First-call autotune** at 10K-12K takes ~5 seconds (20 configs of
+  non-trivially-long calls); smaller shapes finish in a second or two.
+  Subsequent calls at the same shape are essentially free (cache hit).
+- **The 20-variant nvcc compile** takes ~half a minute on a cold run.
+  `nvcc` caches cubins by mtime, so subsequent runs of an unchanged
+  kernel start instantly.
 
 ## What you've built
 
@@ -164,14 +204,14 @@ kernel does, in roughly the same shape:
 - Triton-style chunked grid walk for L2 reuse.
 - Two-phase coalesced epilogue, parameterized by warp count and load
   width.
-- Per-shape autotuning over four knobs.
+- Per-shape autotuning over the two knobs that actually matter
+  (`NS`, `GSM`).
 
-That's **89-102 % of cuBLAS across an 11-shape sweep on B200** —
-with a ~1300 TFLOPS plateau from 7K onward, a 95-99 % sweet spot at
-8K-11K, and one shape (11264³) where the autotuned config edges past
-cuBLAS for this run.  The remaining gap at small shapes is the
-territory production libraries claim with SASS-level micro-tuning
-that's outside this tutorial's scope.
+That's **87-98 % of cuBLAS across an 11-shape sweep on B200** —
+with a ~1400 TFLOPS plateau from 6K onward, and a 94-98 % sweet spot
+at 7K-11K.  The remaining gap at small shapes is the territory
+production libraries claim with SASS-level micro-tuning that's outside
+this tutorial's scope.
 
 ## Run
 
@@ -181,5 +221,5 @@ python main.py
 ```
 
 A Blackwell GPU (sm_100a / B200) is required.  First run compiles
-~80 kernel variants (a few minutes); subsequent runs reuse the cubin
+~20 kernel variants (~30 seconds); subsequent runs reuse the cubin
 cache and start instantly.
