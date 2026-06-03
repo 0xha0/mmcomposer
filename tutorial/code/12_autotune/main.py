@@ -16,6 +16,7 @@ import time
 import ctypes
 
 import torch
+import triton.testing
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cuda_utils import (
@@ -32,6 +33,7 @@ from cuda.bindings import driver
 try:
     sys.path.insert(0, "/data/home/tong/projects/mymatmul")
     from mymatmul.gpu.blackwell.matmul_b42_gsm import matmul_b42_gsm  # noqa
+    from mymatmul.gpu.blackwell import matmul_b42_gsm as _b42_mod
     HAS_B42 = True
 except Exception as _e:
     HAS_B42 = False
@@ -95,65 +97,47 @@ for cfg, kern in kernels.items():
         shared_for(ns)))
 
 
-# ── 2. L2 invalidation + median-of-batches timing ──────────────────────────
+# ── 2. Timing — delegated to triton.testing.do_bench ──────────────────────
 #
-# B200 L2 cache is 132 MB.  Allocate a 256-MB scratch buffer once and
-# write through it before each timed batch to evict whatever the
-# previous batch left in L2.  Without this, configs that happen to
-# benefit from cross-launch L2 reuse get an inflated reading, biasing
-# the tuner toward configs that look good in steady-state but are
-# slower for the more realistic "first call" scenario.  The
-# invalidation runs once per *batch*, not per launch — within a batch
-# the L2 warms up normally, which is what kernels see in practice.
-L2_FLUSH_BYTES = 256 * 1024 * 1024
-_l2_scratch    = torch.empty(L2_FLUSH_BYTES, dtype=torch.uint8, device="cuda")
+# The README walks through what a from-scratch timer would need to handle
+# (L2 invalidation between batches, the per-launch-sync foot-gun, median
+# vs mean, etc.).  Once you understand WHY those things matter, the right
+# next move in production is to delegate to a battle-tested timer that
+# already gets them right.  triton.testing.do_bench is exactly that:
+#   - flushes a 256 MB scratch buffer through L2 between samples,
+#   - adaptively picks iter count to fit the rep window,
+#   - times via CUDA events with the right sync semantics,
+#   - returns quantiles so we get median / min / max for free.
+def time_kernel_us(kern, threads, sh, args, grid, warmup_ms=20, rep_ms=200):
+    """Median per-call time (µs) via triton.testing.do_bench.
 
-def invalidate_l2():
-    _l2_scratch.zero_()
+    do_bench handles the things we'd otherwise have to handle manually:
+      - L2 cache flushing between samples,
+      - adaptive iter count to fit the rep window across fast/slow kernels,
+      - correct event-based timing with implicit per-batch synchronize.
 
-def time_median(kern, threads, sh, args, grid, n_batches=5, iters=5):
-    """Return median per-call time (µs).
-
-    Records n_batches independent timed segments, each averaging
-    `iters` launches.  Returns the median of those n_batches numbers.
-    Using median (not mean) discards single-batch noise — important
-    when ranking variants whose true gaps are a few percent.  L2 is
-    flushed before each batch so warmth from the previous batch
-    doesn't bias the timing.
+    We keep our own custom timer's lessons in the README (L2 flushing,
+    median vs mean, per-launch sync foot-gun, tournament budget) because
+    they explain WHY do_bench is structured the way it is — but for the
+    actual timing in this chapter's autotuner and final-measurement, we
+    use the battle-tested library function.
     """
     block = (threads, 1, 1)
-    # warmup
-    for _ in range(2):
+    def call():
         launch(kern, grid=grid, block=block, shared=sh, args=args, sync=False)
-    torch.cuda.synchronize()
-    times_us = []
-    for _ in range(n_batches):
-        invalidate_l2()
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end   = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(iters):
-            # sync=False: queue launches back-to-back so we measure
-            # device throughput, not host launch-sync round trips.
-            # At small shapes (~5 µs kernels), per-launch sync would
-            # double or triple the apparent runtime.
-            launch(kern, grid=grid, block=block, shared=sh, args=args, sync=False)
-        end.record()
-        torch.cuda.synchronize()
-        times_us.append(start.elapsed_time(end) / iters * 1e3)
-    times_us.sort()
-    return times_us[len(times_us) // 2]
+    ms_med, _, _ = triton.testing.do_bench(
+        call, warmup=warmup_ms, rep=rep_ms, quantiles=(0.5, 0.0, 1.0))
+    return ms_med * 1000.0   # ms -> µs
 
 
 # ── 3. The Autotuner ───────────────────────────────────────────────────────
 class Autotuner:
     def __init__(self, kernels):
         self.kernels = kernels
-        self.cache   = {}     # (M, N, K) -> cfg
+        self.cache   = {}      # (M, N, K) -> cfg
 
     def pick(self, M, N, K, args, grid,
-             tune_batches=7, tune_iters=50):
+             warmup_ms=20, rep_ms=200):
         key = (M, N, K)
         if key in self.cache:
             return self.kernels[self.cache[key]], self.cache[key]
@@ -169,9 +153,9 @@ class Autotuner:
             ns, gsm, nw, _ldx = cfg
             if gsm > grid_m_clusters:
                 continue
-            us = time_median(kern, nw * WARP_SIZE, shared_for(ns),
-                             args, grid,
-                             n_batches=tune_batches, iters=tune_iters)
+            us = time_kernel_us(kern, nw * WARP_SIZE, shared_for(ns),
+                                args, grid,
+                                warmup_ms=warmup_ms, rep_ms=rep_ms)
             if us < best_us:
                 best_us, best_cfg = us, cfg
 
@@ -205,66 +189,41 @@ def setup(M, N, K):
     return A, B, C, args, grid
 
 
-def time_pytorch_median(A, B, n_batches=11, iters=20):
-    """PyTorch (cuBLAS) baseline, same median + L2-flush methodology."""
-    for _ in range(2):
-        _ = A @ B
+def time_pytorch_us(A, B, warmup_ms=20, rep_ms=200):
+    """PyTorch (cuBLAS) baseline via do_bench for apples-to-apples."""
+    ms_med, _, _ = triton.testing.do_bench(
+        lambda: A @ B,
+        warmup=warmup_ms, rep=rep_ms, quantiles=(0.5, 0.0, 1.0))
+    return ms_med * 1000.0
+
+
+def time_b42_us(A, B, warmup_ms=20, rep_ms=200):
+    """mymatmul/b42_gsm via do_bench.  First call triggers b42's own
+    internal autotune over (BN, BK, NS, GSM); subsequent calls dispatch
+    to the cached winner."""
+    # Trigger b42's internal autotune for this shape (its first call is
+    # the autotuner; we want it primed before timing).
+    _ = matmul_b42_gsm(A, B)
     torch.cuda.synchronize()
-    times_us = []
-    for _ in range(n_batches):
-        invalidate_l2()
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end   = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(iters):
-            _ = A @ B
-        end.record()
-        torch.cuda.synchronize()
-        times_us.append(start.elapsed_time(end) / iters * 1e3)
-    times_us.sort()
-    return times_us[len(times_us) // 2]
-
-
-def time_b42_median(A, B, n_batches=11, iters=20):
-    """mymatmul/b42_gsm production kernel, same methodology.
-
-    First call autotunes b42's own (BN, BK, NS, GSM) sweep over its
-    5 base configs × 4 GSMs.  Subsequent calls dispatch to the cached
-    winner.  We then time those dispatches the same way we time
-    cuBLAS / our autotuned kernel.
-    """
-    # warmup + autotune b42's internal cache for this shape
-    for _ in range(2):
-        _ = matmul_b42_gsm(A, B)
-    torch.cuda.synchronize()
-    times_us = []
-    for _ in range(n_batches):
-        invalidate_l2()
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end   = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(iters):
-            _ = matmul_b42_gsm(A, B)
-        end.record()
-        torch.cuda.synchronize()
-        times_us.append(start.elapsed_time(end) / iters * 1e3)
-    times_us.sort()
-    return times_us[len(times_us) // 2]
+    ms_med, _, _ = triton.testing.do_bench(
+        lambda: matmul_b42_gsm(A, B),
+        warmup=warmup_ms, rep=rep_ms, quantiles=(0.5, 0.0, 1.0))
+    return ms_med * 1000.0
 
 
 # ── 5. Sweep all shapes ────────────────────────────────────────────────────
 tuner = Autotuner(kernels)
 
-b42_col = "  b42  " if HAS_B42 else ""
-b42_sep = "  ─────" if HAS_B42 else ""
+b42_cfg_col = "  b42 (BN,BK,NS,GSM) " if HAS_B42 else ""
+b42_tf_col  = "    b42  " if HAS_B42 else ""
+b42_cfg_sep = "  ───────────────────" if HAS_B42 else ""
+b42_tf_sep  = "    ─────" if HAS_B42 else ""
 
 print(f"\nAutotuning {len(SHAPES)} shapes vs. PyTorch (cuBLAS)"
       + (" and mymatmul/b42_gsm" if HAS_B42 else "") + ":\n")
-print(f"  {'shape':<8}  {'best (NS, GSM, NW, LDX)':<25}  "
-      f"{'ours':>7}  {'cuBLAS':>7}{b42_col}  {'ratio*':>6}")
-print(f"  {'─'*8}  {'─'*25}  {'─'*7}  {'─'*7}{b42_sep}  {'─'*6}")
+print(f"  {'shape':<8}  {'ch12 (NS, GSM, NW, LDX)':<26}{b42_cfg_col}  "
+      f"{'ch12':>6}  {'cuBLAS':>7}{b42_tf_col}  {'ratio*':>6}")
+print(f"  {'─'*8}  {'─'*26}{b42_cfg_sep}  {'─'*6}  {'─'*7}{b42_tf_sep}  {'─'*6}")
 
 results = []
 for sz in SHAPES:
@@ -281,30 +240,41 @@ for sz in SHAPES:
     C_ref = (A.float() @ B.float()).to(torch.bfloat16)
     rel = (C.float() - C_ref.float()).abs().max().item() / C_ref.float().abs().max().item()
 
-    # Final, well-warmed median timings with L2 flush.
-    us_ours = time_median(kern, nw * WARP_SIZE, shared_for(ns),
-                          args, grid, n_batches=11, iters=50)
-    us_pt   = time_pytorch_median(A, B)
+    # Final timings — same do_bench harness as the autotuner uses for
+    # ranking, just with a bit more rep budget so the reported number
+    # is more stable.
+    us_ours = time_kernel_us(kern, nw * WARP_SIZE, shared_for(ns),
+                             args, grid, warmup_ms=50, rep_ms=500)
+    us_pt   = time_pytorch_us(A, B, warmup_ms=50, rep_ms=500)
     flops   = 2.0 * M * N * K
     tf_ours = flops / (us_ours * 1e-6) / 1e12
     tf_pt   = flops / (us_pt   * 1e-6) / 1e12
 
     us_b42 = None
     tf_b42 = None
-    b42_field = ""
+    b42_cfg_str = ""
+    b42_tf_field = ""
     if HAS_B42:
         try:
-            us_b42 = time_b42_median(A, B)
+            us_b42 = time_b42_us(A, B, warmup_ms=50, rep_ms=500)
             tf_b42 = flops / (us_b42 * 1e-6) / 1e12
-            b42_field = f"  {tf_b42:>5.0f}"
+            b42_tf_field = f"    {tf_b42:>5.0f}"
+            # Read which config b42's internal autotuner picked.
+            b42_cfg = _b42_mod._best.get((M, N, K))
+            if b42_cfg is not None:
+                bbn, bbk, bns, bgsm = b42_cfg
+                b42_cfg_str = f"  ({bbn:3d},{bbk:3d},{bns:1d},{bgsm:2d})  "
+            else:
+                b42_cfg_str = "  (?, ?, ?, ?)        "
         except Exception as e:
-            b42_field = f"  err: {type(e).__name__}"
+            b42_tf_field = f"    err"
+            b42_cfg_str = f"  err: {type(e).__name__:14s}"
 
     ratio   = tf_ours / tf_pt
     cfg_str = f"({ns}, {gsm}, {nw}, {ldx})"
     flag = "✓" if rel < 1e-1 else "✗"
-    print(f"  {sz}^3   {cfg_str:<25}  "
-          f"{tf_ours:>7.1f}  {tf_pt:>7.1f}{b42_field}  {flag} {ratio:>4.0%}")
+    print(f"  {sz}^3   {cfg_str:<26}{b42_cfg_str}  "
+          f"{tf_ours:>6.0f}  {tf_pt:>7.1f}{b42_tf_field}  {flag} {ratio:>4.0%}")
 
     results.append((sz, ns, gsm, nw, ldx, rel, us_ours, tf_ours, us_pt, tf_pt, us_b42, tf_b42))
 
