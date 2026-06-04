@@ -32,7 +32,10 @@ WARP_SIZE     = 32
 ELEM_BYTES    = 2
 NS_SWEEP      = [3, 4, 5, 6, 7]
 GSM_SWEEP     = [1, 4, 8, 16]
-NW_SWEEP      = [8]      # NW=4 dropped — NW=8 wins more consistently and
+NW_SWEEP      = [8]      # NW=4 dropped earlier (ch10 — never wins).  NW=16
+                         # also dropped after a controlled head-to-head probe
+                         # showed it's within ~+/-2%% of NW=8 at every shape
+                         # (autotuner picks of NW=16 were chasing noise).
 LDX_SWEEP     = [8]      # LDX is within ~1%% noise across {8,16,32,64} at
                          # every shape we tested — see probe_ldx.py.  Pruning
                          # it cuts the autotune search 4x with no quality loss.

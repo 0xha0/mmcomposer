@@ -466,11 +466,13 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
     // ── Phase 1: TMEM → SMEM, parameterized by NUM_WARPS and LD_X ───
     //
-    // 4 warps: each warp owns BM/4 = 32 rows × all BN cols.
-    // 8 warps: row_warp ∈ {0..3} picks the 32-row strip;
-    //          col_warp ∈ {0..1} picks the BN/2 col-half.
-    //          Each warp covers 32 rows × BN/2 cols.
-    // LD_X: how many TMEM cols each tcgen05.ld call fetches (8/16/32/64).
+    // 4 warps:  each warp owns BM/4 = 32 rows × all BN cols.
+    // 8 warps:  row_warp ∈ {0..3} picks the 32-row strip;
+    //           col_warp ∈ {0..1} picks the BN/2 col-half.
+    //           Each warp covers 32 rows × BN/2 cols.
+    // 16 warps: row_warp ∈ {0..3}; col_warp ∈ {0..3} picks the BN/4 col-quarter.
+    //           Each warp covers 32 rows × BN/4 cols.
+    // LD_X: how many TMEM cols each tcgen05.ld call fetches (8/16/32).
     constexpr int THREADS = NUM_WARPS * WARP_SIZE;
     int my_row, col_base, col_end;
     uint32_t taddr_row_base;
@@ -479,13 +481,20 @@ __device__ __forceinline__ void matmul_cluster_impl(
         taddr_row_base = taddr + ((uint32_t)(cta_rank * BM + warp_id * 32) << 16);
         col_base = 0;
         col_end  = BN;
-    } else {  // NUM_WARPS == 8
+    } else if constexpr (NUM_WARPS == 8) {
         const int row_warp = warp_id & 3;                // 0..3
         const int col_warp = warp_id >> 2;               // 0..1
         my_row         = row_warp * 32 + lane;
         taddr_row_base = taddr + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
         col_base = col_warp * (BN / 2);
         col_end  = col_base + (BN / 2);
+    } else {  // NUM_WARPS == 16
+        const int row_warp = warp_id & 3;                // 0..3
+        const int col_warp = (warp_id >> 2) & 3;         // 0..3
+        my_row         = row_warp * 32 + lane;
+        taddr_row_base = taddr + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
+        col_base = col_warp * (BN / 4);
+        col_end  = col_base + (BN / 4);
     }
 
     #pragma unroll
@@ -556,15 +565,11 @@ void matmul_tune_ns##NS_##_gsm##GSM_##_nw##NW_##_ldx##LDX_(                     
     matmul_cluster_impl<NS_, GSM_, NW_, LDX_>(&A_tmap, &B_tmap, C_ptr, M, N, K);          \
 }
 
-#define MAKE_LDX_ROW(NS_, GSM_, NW_)  \
-    MAKE_LAUNCHER(NS_, GSM_, NW_, 8)   \
-    MAKE_LAUNCHER(NS_, GSM_, NW_, 16)  \
-    MAKE_LAUNCHER(NS_, GSM_, NW_, 32)  \
-    MAKE_LAUNCHER(NS_, GSM_, NW_, 64)
-
-#define MAKE_NW_ROW(NS_, GSM_)    \
-    MAKE_LDX_ROW(NS_, GSM_, 4)    \
-    MAKE_LDX_ROW(NS_, GSM_, 8)
+// LDX is pinned at 8 (see probe_ldx.py — within ~1%% noise across all LDX
+// values at every shape).  NW is pinned at 8 (NW=4 never wins — see ch10;
+// NW=16 also within ~2%% noise — see commit history).
+#define MAKE_NW_ROW(NS_, GSM_)       \
+    MAKE_LAUNCHER(NS_, GSM_, 8,  8)
 
 #define MAKE_GSM_ROW(NS_)         \
     MAKE_NW_ROW(NS_, 1)            \
@@ -580,5 +585,4 @@ MAKE_GSM_ROW(7)
 
 #undef MAKE_GSM_ROW
 #undef MAKE_NW_ROW
-#undef MAKE_LDX_ROW
 #undef MAKE_LAUNCHER
