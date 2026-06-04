@@ -145,19 +145,22 @@ that's 2 iterations.
 
 ### How threads write to SMEM in phase 1
 
-The SMEM staging buffer `C_sh` is sized to fit the **entire** `BM × BN`
-output tile — no rounds, no reuse:
+**SMEM holds the full output tile — no rounds, no reuse.**  The SMEM
+staging buffer `C_sh` is sized exactly to fit the entire `BM × BN`
+output tile in bf16, plus a small per-row padding:
 
 ```cpp
 constexpr int BN_PAD = BN + 8;                       // 264 (BN=256 + 8 padding bf16)
-constexpr int EPILOGUE_STAGING_BYTES = BM * BN_PAD * 2;   // 128 × 264 × 2 ≈ 66 KB
+constexpr int EPILOGUE_STAGING_BYTES = BM * BN_PAD * 2;   // 128 × 264 × 2 = 67584 B ≈ 66 KB
 auto C_sh = reinterpret_cast<__nv_bfloat16(*)[BN_PAD]>(smem);
 ```
 
-So `C_sh` is a `bf16[128][264]` — **128 rows × 256 used cols**, with 8
-columns of dead-zone padding per row.  Phase 1 writes each output
-element exactly once.  After phase 1's `__syncthreads()` the whole
-output tile lives in SMEM; phase 2 then drains it to GMEM.
+So `C_sh` is a `bf16[128][264]` — full **128 rows × 256 used cols** of
+the output tile (with 8 cols of dead-zone padding per row for
+bank-conflict avoidance — explained in the next subsection).  Phase 1
+writes each output element exactly once.  After phase 1's
+`__syncthreads()` the whole output tile lives in SMEM; phase 2 then
+drains it to GMEM.
 
 The SMEM layout is *logically* identical to TMEM (same `[row][col]`
 semantics for the output values), but *physically* a regular
