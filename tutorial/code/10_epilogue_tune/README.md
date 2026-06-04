@@ -208,20 +208,28 @@ about a 4× improvement over the unpadded case.  Cheap to buy: 8 cols ×
 `M = N = K = 8192`, `NS = 5`, `GSM = 8` (best from ch09).  Full
 `NUM_WARPS × LD_X` cross, measured via `triton.testing.do_bench`:
 
-| | `x8` | `x16` | `x32` | `x64` |
-|---|---|---|---|---|
-| **4 warps** | **1428** | 1409 | 1390 | 1396 |
-| 8 warps     | 1389     | 1389 | 1391 | 1393 |
+| | `x8` | `x16` | `x32` |
+|---|---|---|---|
+| 4 warps      | 1311 | **1351** | 1327 |
+| 8 warps      | 1321 |     1321 | 1321 |
+| 16 warps     | 1317 |     1314 | 1317 |
 
 (TFLOPS, higher is better.  ch09's reference at the same `(NS, GSM)`
 was 1352 TFLOPS, so the whole table sits within run-to-run noise of
 that baseline.)
 
+We drop `LD_X = 64` from the sweep: at `NUM_WARPS = 16`, each lane's
+`float tmp[LD_X]` register array starts crowding the 64K-reg-per-SM
+budget (16 warps × 32 lanes × 64 fp32 = 32K regs just for `tmp[]`,
+plus all the live state around it).  The sub-percent gains LD_X=64
+might offer at low warp counts aren't worth carrying a register-cliff
+risk for the high-warp-count rows.
+
 ## Interpretation — the K-loop dominates at this shape
 
-The full sweep clusters within ~3 % (1389–1428), and the **default
-4-warp / `.x8` configuration is the best**.  Surprising at first — why
-don't more warps or wider loads help?
+The full sweep clusters within **~3 %** (1311–1351), and **no
+configuration meaningfully beats the others**.  Surprising at first —
+why don't more warps or wider loads help?
 
 Because at `K = 8192`, the K-loop runs **128 iterations per CTA**
 before the epilogue runs once.  The K-loop is bound by TMA bandwidth
@@ -234,6 +242,15 @@ You can roughly read each cell as "kernel time" with the epilogue
 substituted for that config.  Differences between cells are
 differences in **epilogue time alone**, which is ~5-10 % of total.
 50 % of 5-10 % is 2-5 %.  Right around our noise floor.
+
+What's interesting is **how flat the higher-warp-count rows are**:
+`NUM_WARPS = 16` produces near-identical TFLOPS across `LD_X` values
+(1314-1317, basically zero variation).  Doubling warp count compresses
+the LDX-sensitivity range because each warp's per-iteration work
+shrinks, leaving less per-warp arithmetic to amortize the
+`tcgen05.ld` issue overhead in different ways.  Useful to keep in
+mind: the *autotuner's job in ch12 gets easier* on the high-warp
+rows because there's less spurious variation to mis-rank.
 
 ## Why the chapter is still worth its slot
 

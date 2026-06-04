@@ -27,8 +27,9 @@ NS            = 5
 GSM           = 8
 M, N, K       = 8192, 8192, 8192
 
-NW_SWEEP      = [4, 8]
-LDX_SWEEP     = [8, 16, 32, 64]
+NW_SWEEP      = [4, 8, 16]
+LDX_SWEEP     = [8, 16, 32]    # LDX=64 dropped — at NW=16 it would risk
+                                # register-cliff (16 warps × 64 fp32/lane).
 
 A_SLOT_BYTES  = BM       * BK * ELEM_BYTES
 B_SLOT_BYTES  = BN_LOCAL * BK * ELEM_BYTES
@@ -98,16 +99,18 @@ rel = (C.float() - C_ref.float()).abs().max().item() / C_ref.float().abs().max()
 ok = "✓" if rel < 5e-2 else "✗"
 
 flops = 2.0 * M * N * K
+nw_str  = "{" + ", ".join(str(n) for n in NW_SWEEP) + "}"
+ldx_str = "{" + ", ".join(str(x) for x in LDX_SWEEP) + "}"
 print(f"{ok}  M=N=K={M}   NS={NS}, GSM={GSM}   rel err={rel:.2%}")
-print(f"     (4-warp & 8-warp × LD_X ∈ {{8, 16, 32, 64}}, head-to-head TFLOPS)\n")
+print(f"     (NUM_WARPS ∈ {nw_str} × LD_X ∈ {ldx_str}, head-to-head TFLOPS)\n")
 
 # Header
-hdr = "     LD_X →   " + "   ".join(f"{ldx:>7}" for ldx in LDX_SWEEP)
+hdr = "     LD_X →    " + "   ".join(f"{ldx:>7}" for ldx in LDX_SWEEP)
 print(hdr)
-print("     ─────────" + "   ".join([f"{'─'*7}"] * len(LDX_SWEEP)))
+print("     ──────────" + "   ".join([f"{'─'*7}"] * len(LDX_SWEEP)))
 for nw in NW_SWEEP:
     threads = nw * 32
-    row = [f"{nw} warps  "]
+    row = [f"{nw:>2d} warps  "]
     for ldx in LDX_SWEEP:
         us = time_kernel(kernels[(nw, ldx)], threads=threads)
         tf = flops / (us * 1e-6) / 1e12

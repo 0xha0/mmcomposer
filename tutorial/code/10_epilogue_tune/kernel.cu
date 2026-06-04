@@ -472,7 +472,9 @@ __device__ __forceinline__ void matmul_cluster_impl(
     // 8 warps: row_warp ∈ {0..3} picks the 32-row strip;
     //          col_warp ∈ {0..1} picks the BN/2 col-half.
     //          Each warp covers 32 rows × BN/2 cols.
-    // LD_X: how many TMEM cols each tcgen05.ld call fetches (8/16/32/64).
+    // 16 warps: row_warp ∈ {0..3}; col_warp ∈ {0..3} picks the BN/4 col-quarter.
+    //          Each warp covers 32 rows × BN/4 cols.
+    // LD_X: how many TMEM cols each tcgen05.ld call fetches (8/16/32).
     constexpr int THREADS = NUM_WARPS * WARP_SIZE;
     int my_row, col_base, col_end;
     uint32_t taddr_row_base;
@@ -481,13 +483,20 @@ __device__ __forceinline__ void matmul_cluster_impl(
         taddr_row_base = taddr + ((uint32_t)(cta_rank * BM + warp_id * 32) << 16);
         col_base = 0;
         col_end  = BN;
-    } else {  // NUM_WARPS == 8
+    } else if constexpr (NUM_WARPS == 8) {
         const int row_warp = warp_id & 3;                // 0..3
         const int col_warp = warp_id >> 2;               // 0..1
         my_row         = row_warp * 32 + lane;
         taddr_row_base = taddr + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
         col_base = col_warp * (BN / 2);
         col_end  = col_base + (BN / 2);
+    } else {  // NUM_WARPS == 16
+        const int row_warp = warp_id & 3;                // 0..3
+        const int col_warp = (warp_id >> 2) & 3;         // 0..3
+        my_row         = row_warp * 32 + lane;
+        taddr_row_base = taddr + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
+        col_base = col_warp * (BN / 4);
+        col_end  = col_base + (BN / 4);
     }
 
     #pragma unroll
@@ -556,13 +565,14 @@ void matmul_epi_nw##NW_##_ldx##LDX_(                                            
     matmul_cluster_impl</*NS=*/5, /*GSM=*/8, NW_, LDX_>(&A_tmap, &B_tmap, C_ptr, M, N, K); \
 }
 
-MAKE_LAUNCHER(4, 8)
-MAKE_LAUNCHER(4, 16)
-MAKE_LAUNCHER(4, 32)
-MAKE_LAUNCHER(4, 64)
-MAKE_LAUNCHER(8, 8)
-MAKE_LAUNCHER(8, 16)
-MAKE_LAUNCHER(8, 32)
-MAKE_LAUNCHER(8, 64)
+MAKE_LAUNCHER(4,  8)
+MAKE_LAUNCHER(4,  16)
+MAKE_LAUNCHER(4,  32)
+MAKE_LAUNCHER(8,  8)
+MAKE_LAUNCHER(8,  16)
+MAKE_LAUNCHER(8,  32)
+MAKE_LAUNCHER(16, 8)
+MAKE_LAUNCHER(16, 16)
+MAKE_LAUNCHER(16, 32)
 
 #undef MAKE_LAUNCHER
