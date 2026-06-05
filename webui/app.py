@@ -136,21 +136,29 @@ if warnings:
 else:
     st.success("✓ Configuration passes all static constraint checks for the selected tier.")
     # Empirical ground truth from the committed B200 compatibility matrix.
-    status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw)
-    cm = mc.load_compat()
-    if status == "verified":
-        biggest = max(mc.perf_shapes()) if mc.perf_shapes() else None
-        p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, biggest) if biggest else None
-        msg = f"✅ Empirically verified on B200 ({cm.get('arch', 'sm_100a')}): compiles, runs, correct."
-        if p and p.get("tflops"):
-            msg += f"  {p['tflops']:.0f} TFLOPS at {biggest}³ ({p['vs_cublas']:.0%} of cuBLAS)."
-        st.success(msg)
-    elif status == "failed":
-        st.error("❌ This combination is in the B200 compatibility matrix as **failing** "
-                 "at runtime despite passing static checks — do not use.")
-    else:
-        st.info("ℹ️ Not in the B200 compatibility matrix (outside the swept grid); "
-                "static checks only.")
+    # Wrapped defensively: the matrix annotation is an enhancement, so any
+    # issue loading it (e.g. a stale module right after a deploy) must not
+    # take down the configurator.
+    cm = {}
+    try:
+        cm = mc.load_compat()
+        status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw)
+        pshapes = mc.perf_shapes()
+        if status == "verified":
+            biggest = max(pshapes) if pshapes else None
+            p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, biggest) if biggest else None
+            msg = f"✅ Empirically verified on B200 ({cm.get('arch', 'sm_100a')}): compiles, runs, correct."
+            if p and p.get("tflops"):
+                msg += f"  {p['tflops']:.0f} TFLOPS at {biggest}³ ({p['vs_cublas']:.0%} of cuBLAS)."
+            st.success(msg)
+        elif status == "failed":
+            st.error("❌ This combination is in the B200 compatibility matrix as **failing** "
+                     "at runtime despite passing static checks — do not use.")
+        else:
+            st.info("ℹ️ Not in the B200 compatibility matrix (outside the swept grid); "
+                    "static checks only.")
+    except Exception:
+        pass  # no compat annotation; static checks already shown above
 
 
 # ── Render kernel + self-contained host ──────────────────────────────
@@ -171,15 +179,21 @@ with tab_host:
                        file_name=f"host_{tier['dir']}.py", mime="text/x-python")
 
 with tab_bench:
-    pshapes = mc.perf_shapes()
+    try:
+        pshapes = mc.perf_shapes()
+    except Exception:
+        pshapes = []
+    swept = ", ".join(f"{s}³" for s in pshapes) if pshapes else "the swept shapes"
     st.caption(f"Numbers are **measured on a real B200** ({cm.get('arch', 'sm_100a')}) for this exact "
-               f"config, recorded at {', '.join(f'{s}³' for s in pshapes)} via `do_bench`.  "
-               "Download the kernel + host to reproduce.")
+               f"config, recorded at {swept} via `do_bench`.  Download the kernel + host to reproduce.")
     rows = []
     for (m, n, k) in mc.parse_shapes(shapes_text):
         square = (m == n == k)
-        p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m) if square else None
-        cub = mc.cublas_tflops(m) if square else None
+        try:
+            p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m) if square else None
+            cub = mc.cublas_tflops(m) if square else None
+        except Exception:
+            p, cub = None, None
         rows.append({
             "Shape": f"{m}³" if square else f"{m}×{n}×{k}",
             "TFLOPS (B200)": f"{p['tflops']:.0f}" if (p and p.get("tflops")) else "—",
@@ -190,8 +204,8 @@ with tab_bench:
         st.dataframe(rows, width="stretch", hide_index=True)
     else:
         st.info("Enter at least one valid `M,N,K` shape in the sidebar.")
-    st.caption(f"Measured TFLOPS exist only for the swept shapes ({', '.join(f'{s}³' for s in pshapes)}) "
-               "and matrix-covered knob combos; other shapes/combos show —.")
+    st.caption(f"Measured TFLOPS exist only for {swept} and matrix-covered knob combos; "
+               "other shapes/combos show —.")
 
 
 # ── Footer ────────────────────────────────────────────────────────────
