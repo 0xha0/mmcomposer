@@ -158,15 +158,11 @@ host_src   = mc.render_host(tier, bm, bn, bk, ns, gsm, nw)
 tab_kernel, tab_host, tab_bench = st.tabs(["Kernel code", "Host code (self-contained)", "Benchmark (pre-baked)"])
 
 with tab_kernel:
-    st.caption(f"`webui/kernels/{tier['dir']}/kernel.cu` · entry `{tier['symbol']}` · "
-               f"BM={bm} BN={bn} BK={bk} NS={ns} GROUP_SIZE_M={gsm} NUM_WARPS={nw} substituted.")
     st.code(kernel_src, language="cpp", line_numbers=True)
     st.download_button("⬇ Download kernel.cu", data=kernel_src,
                        file_name=f"mm_b200_{tier['dir']}_bm{bm}_bn{bn}_bk{bk}.cu", mime="text/x-c")
 
 with tab_host:
-    st.caption("Self-contained launcher (runtime plumbing inlined): runs with "
-               "`python host.py` given torch + cuda-python + nvcc.  Put `kernel.cu` alongside it.")
     st.code(host_src, language="python", line_numbers=True)
     st.download_button("⬇ Download host.py", data=host_src,
                        file_name=f"host_{tier['dir']}.py", mime="text/x-python")
