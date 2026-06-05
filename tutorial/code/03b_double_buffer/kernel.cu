@@ -86,6 +86,12 @@ __device__ __forceinline__ uint64_t make_desc(uint32_t smem_addr) {
     constexpr uint64_t SBO = 8 * 128;
     uint64_t a = ((uint64_t)smem_addr >> 4) & 0x3FFFULL;
     uint64_t b = ((SBO)              >> 4) & 0x3FFFULL;
+    // NOTE: this descriptor encoding is verified at BM=128 only.  BM=64
+    // and BM=256 produce wrong MMA output — bit 46 (matrix base offset)
+    // is NOT the culprit (tried 0 and 1, both give the same result).
+    // The actual BM-dependent piece is somewhere we haven't isolated
+    // (likely related to how the MMA hardware walks the SMEM A tile at
+    // different M-extents with SWIZZLE_128B).
     return a | (b << 32) | (1ULL << 46) | (2ULL << 61);
 }
 

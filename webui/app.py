@@ -98,10 +98,12 @@ with st.sidebar:
 
     st.subheader("Tile shape")
     bm  = st.selectbox(
-        "BM", [64, 128, 256], index=1,
-        help="M-dimension tile size per CTA.  Each CTA owns BM output rows.  "
-             "The tutorial baseline expects BM == num_warps × 32 (epilogue "
-             "row partitioning).",
+        "BM", [128], index=0,
+        help="M-dimension tile size per CTA.  Currently locked at 128: the "
+             "`make_desc` / TMA-descriptor encoding for SWIZZLE_128B has a "
+             "BM-dependent piece we haven't fully traced, so BM != 128 "
+             "produces wrong MMA output.  The dropdown is single-valued "
+             "until that's fixed; other knobs (NS, GSM, shapes) still vary.",
     )
     bn  = st.selectbox(
         "BN", [64, 128, 256, 512], index=2,
