@@ -8,14 +8,19 @@
 //
 // What it gets:
 //   - K-major B descriptor (from ch06)
-//   - 2-slot SMEM ring (NS=2 hardcoded — "double buffer")
-//   - Coalesced 2-phase epilogue (from ch07)
-//   - Templated CTA-swizzle factor (from ch09) for L2 reuse on B
+//   - NS-slot SMEM ring (NS user-tunable; 2 = double buffer)
+//   - Coalesced 2-phase epilogue (from ch07), generalized over
+//     (BM, NUM_WARPS) with constraint BM % (NUM_WARPS × 32) == 0
+//   - CTA-swizzle factor (from ch09) for L2 reuse on B
 //
 // What it deliberately doesn't have:
 //   - Warp specialization (no dedicated TMA/MMA warp split)
-//   - Deeper multi-stage (NS > 2)
 //   - Cluster MMA (cta_group::2)
+//
+// All six tunables (BM, BN, BK, NS, GROUP_SIZE_M, NUM_WARPS) live as
+// constexpr at the top so the MVP web UI can regex-edit them
+// uniformly.  Only (BM=128, NW=4) is verified end-to-end so far —
+// other combinations may need fixes.
 //
 // Toggling those on in the MVP web UI moves the user up to ch07 or
 // ch09 respectively.  This chapter is the "all toggles off" point.
@@ -308,27 +313,49 @@ extern "C" __global__ void matmul_dbuf(
     mbarrier_wait_phase(
         (uint32_t)__cvta_generic_to_shared(&all_mmas_done), 0);
 
-    // ── Coalesced 2-phase epilogue (lifted from ch07) ───────────────
+    // ── Coalesced 2-phase epilogue (generalized from ch07) ──────────
+    //
+    // Phase 1: each warp owns a contiguous *32-row TMEM stripe* per
+    // iteration of the chunk loop and walks all BN cols of it.
+    // tcgen05.ld.32x32b reads 32 rows (one per lane) × 8 cols per
+    // call; we cover BN by stepping n by 8.  ch07 had exactly one
+    // stripe per warp (BM = NUM_WARPS × 32, so the chunk loop didn't
+    // exist).  When BM > NUM_WARPS × 32, each warp processes multiple
+    // stripes, super-chunk-strided so the (warp, chunk) → row_base
+    // mapping is non-overlapping.
+    //
+    // Constraint: BM % (NUM_WARPS × 32) == 0.
+    //
+    // Examples:
+    //   BM=128, NW=4 → 1 stripe/warp  (warp W rows W·32..(W+1)·32-1)
+    //   BM=128, NW=2 → 2 stripes/warp (interleaved super-chunks)
+    //   BM=256, NW=4 → 2 stripes/warp
     auto C_sh = reinterpret_cast<__nv_bfloat16(*)[BN_PAD]>(smem);
 
     tcgen05_fence_after_thread_sync();
 
-    const int my_row = warp_id * 32 + lane;
-    const uint32_t taddr_row_base = taddr + ((uint32_t)(warp_id * 32) << 16);
+    constexpr int CHUNKS_PER_WARP = BM / (NUM_WARPS * 32);
 
     #pragma unroll
-    for (int n = 0; n < BN; n += 8) {
-        float tmp[8];
-        tcgen05_ld_32x32b_x8(taddr_row_base + (uint32_t)n, tmp);
-        tcgen05_wait_ld();
+    for (int chunk = 0; chunk < CHUNKS_PER_WARP; chunk++) {
+        const int row_base       = (chunk * NUM_WARPS + warp_id) * 32;
+        const int my_row         = row_base + lane;
+        const uint32_t taddr_row = taddr + ((uint32_t)row_base << 16);
 
-        __nv_bfloat162 packed[4];
         #pragma unroll
-        for (int i = 0; i < 4; i++) {
-            packed[i] = __floats2bfloat162_rn(tmp[2 * i], tmp[2 * i + 1]);
+        for (int n = 0; n < BN; n += 8) {
+            float tmp[8];
+            tcgen05_ld_32x32b_x8(taddr_row + (uint32_t)n, tmp);
+            tcgen05_wait_ld();
+
+            __nv_bfloat162 packed[4];
+            #pragma unroll
+            for (int i = 0; i < 4; i++) {
+                packed[i] = __floats2bfloat162_rn(tmp[2 * i], tmp[2 * i + 1]);
+            }
+            *reinterpret_cast<int4*>(&C_sh[my_row][n]) =
+                *reinterpret_cast<int4*>(packed);
         }
-        *reinterpret_cast<int4*>(&C_sh[my_row][n]) =
-            *reinterpret_cast<int4*>(packed);
     }
 
     __syncthreads();
