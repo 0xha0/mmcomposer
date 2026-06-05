@@ -214,13 +214,17 @@ if tier.get("pending"):
 def validate_config(bm, bn, bk, gsm, nw, chapter):
     """Return a list of human-readable warnings.  Empty list = clean."""
     out = []
-    # SWIZZLE_128B inner-box: B's inner dim is 64 BF16 = 128 B (one
-    # swizzle atom).  Changing BK breaks make_desc_K_major's LBO math.
+    # SWIZZLE_128B forces the TMA inner-box dim to be exactly one
+    # 128 B swizzle atom = 64 BF16 elements.  BK is the inner dim on
+    # A's box ([BK, BM]) and on K-major B's box ([BK, ...]), so BK
+    # must be 64.  Other values silently load the wrong SMEM layout.
     if bk != 64:
         out.append(
-            f"**BK = {bk}**: the tutorial's K-major B descriptor + SWIZZLE_128B "
-            "TMA constrain BK to 64.  Other values won't compile without "
-            "rewriting `make_desc_K_major` and the LBO math."
+            f"**BK = {bk}**: TMA with `SWIZZLE_128B` requires the inner-box "
+            "dim to be exactly 128 bytes = 64 BF16 elements.  BK is the "
+            "inner dim on both A's and B's TMA descriptors in the tutorial "
+            "kernels, so BK is locked at 64.  Other values either won't "
+            "compile or will silently load garbage SMEM."
         )
     # BN must be a multiple of the TMA sub-tile width (64).
     if bn % 64 != 0:
