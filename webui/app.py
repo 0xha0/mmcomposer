@@ -45,15 +45,10 @@ TUTORIAL_CODE = REPO_ROOT / "tutorial" / "code"
 TIER_MAP = {
     (False, False): {
         "label":  "Tier 1 — Baseline",
-        "desc":   "Single-CTA, double-buffered SMEM, sync MMA, coalesced epilogue. "
-                  "The CTA-swizzle knob still applies.",
-        "chapter": "07_coalesced_epilogue",   # placeholder
-        "pending": True,
-        "pending_note":
-            "**Baseline chapter (`03b_double_buffer`) is under development.**  "
-            "For now we display **ch07** (warp-spec multi-stage, single CTA) as a "
-            "placeholder — close in spirit but not yet the no-warp-spec, NS=2 baseline "
-            "this tier will eventually point at.",
+        "desc":   "Single-CTA, 2-slot SMEM double buffer, sync MMA (no warp split), "
+                  "coalesced epilogue.  CTA-swizzle factor still applies.",
+        "chapter": "03b_double_buffer",
+        "pending": False,
     },
     (True,  False): {
         "label":  "Tier 2 — Multi-stage + warp specialization",
@@ -203,6 +198,9 @@ main_view   = substitute_main_params(main_src,   bm=bm, bn=bn, bk=bk)
 # (tier, BM, BN, BK, GSM, NW, shape).  For the MVP we ship the b41_w8
 # numbers at M=N=K=8192 as a placeholder so the layout is real.
 PRE_BAKED = {
+    "03b_double_buffer":     {(2048, 2048, 2048): 540,
+                              (4096, 4096, 4096): 770,
+                              (8192, 8192, 8192): 832},
     "07_coalesced_epilogue": {(8192, 8192, 8192): 1110},
     "09_cta_swizzle":        {(8192, 8192, 8192): 1272},
 }

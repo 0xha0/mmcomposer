@@ -18,6 +18,7 @@ parts:
       - file: part2_optimization_ladder/01_tma_swizzle
       - file: part2_optimization_ladder/02_tcgen05_mma
       - file: part2_optimization_ladder/03_outer_k_loop
+      - file: part2_optimization_ladder/03b_double_buffer
       - file: part2_optimization_ladder/04_multi_stage
       - file: part2_optimization_ladder/05_multi_cta
       - file: part2_optimization_ladder/06_k_major_b
