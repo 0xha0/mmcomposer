@@ -250,9 +250,30 @@ def _strip_module_docstring(src: str) -> str:
     return src[end + 3:].lstrip("\n")
 
 
+EPI_MARKER = "// @@EPILOGUE@@"
+
+
+def _splice_epilogue(src: str) -> str:
+    """Replace the `// @@EPILOGUE@@` marker line with the shared epilogue
+    fragment, so all tiers share one epilogue source."""
+    if EPI_MARKER not in src:
+        return src
+    frag = (KERNELS_DIR / "_epilogue.cu.frag").read_text()
+    if not frag.endswith("\n"):
+        frag += "\n"
+    out = []
+    for line in src.splitlines(keepends=True):
+        if line.strip() == EPI_MARKER:
+            out.append(frag)
+        else:
+            out.append(line)
+    return "".join(out)
+
+
 def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw) -> str:
-    """Return the substituted kernel.cu source for a tier."""
+    """Return the substituted, epilogue-stitched kernel.cu for a tier."""
     src = (KERNELS_DIR / tier["dir"] / "kernel.cu").read_text()
+    src = _splice_epilogue(src)
     return substitute_kernel_constexprs(src, **knob_kwargs(bm, bn, bk, ns, gsm, nw))
 
 

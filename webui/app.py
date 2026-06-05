@@ -134,7 +134,7 @@ if warnings:
     for w in warnings:
         st.warning(w)
 else:
-    st.success("✓ Configuration passes all static constraint checks for the selected tier.")
+    st.success("✅ Configuration passes all static constraint checks for the selected tier.")
     # Empirical ground truth from the committed B200 compatibility matrix.
     # Wrapped defensively: the matrix annotation is an enhancement, so any
     # issue loading it (e.g. a stale module right after a deploy) must not
