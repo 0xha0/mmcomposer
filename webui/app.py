@@ -64,7 +64,7 @@ with st.sidebar:
     bn = st.selectbox("BN", mc.BN_OPTS, index=2,
                       help="N tile per CTA.  Multiple of 64 (K-major B TMA sub-tile).  Caps at 256: "
                            "the tcgen05.mma N-atom max is 256, and the cluster splits M, not N.")
-    bk = st.selectbox("BK", mc.BK_OPTS, index=1,
+    bk = st.selectbox("BK", mc.BK_OPTS, index=0,
                       help="K tile per stage.  Locked at 64: the K-major B descriptor uses "
                            "SWIZZLE_128B → inner box = one 128 B atom = 64 BF16.")
     ns = st.selectbox("NS (pipeline stages)", mc.NS_OPTS, index=0,

@@ -44,7 +44,10 @@ BM_OPTS  = [128]
 # the 2-CTA cluster splits M (not N), so BN=512 throws ILLEGAL_INSTRUCTION
 # in every tier (empirically confirmed by the B200 codegen test).
 BN_OPTS  = [64, 128, 256]
-BK_OPTS  = [32, 64, 128]
+# BK is locked to 64: the K-major B TMA descriptor uses SWIZZLE_128B, whose
+# inner box is exactly one 128 B atom = 64 BF16 elements.  Other values
+# don't compile / load garbage, so only 64 is offered.
+BK_OPTS  = [64]
 NS_OPTS  = [2, 3, 4, 5, 6, 7]
 GSM_OPTS = [1, 2, 4, 8, 16, 32]
 NW_OPTS  = [4, 8, 16]
