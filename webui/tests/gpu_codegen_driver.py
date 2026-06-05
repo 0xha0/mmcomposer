@@ -104,47 +104,55 @@ def _compile_worker(job):
     return src_path, r.returncode, (r.stderr[-600:] if r.returncode else "")
 
 
-def launch_from_cubin(tier, k, device, arch, M, N, K, A=None, B=None, C_ref=None):
-    """Load the (already compiled) cubin, launch, check correctness.
+def launch_from_cubin(tier, k, arch, shapes, do_bench=True):
+    """Load the (already compiled) cubin; per shape check correctness and
+    (optionally) benchmark with do_bench.
 
-    A/B/C_ref may be passed in precomputed (they depend only on the
-    shape + seed, not the kernel) so the worker computes the reference
-    matmul once and reuses it across every combo."""
+    ``shapes`` is a list of dicts {M, N, K, A, B, C, C_ref} with tensors
+    precomputed once by the worker and reused across every combo.  Returns
+    a result with overall ``correct`` and a per-shape ``perf`` map of
+    {rel_err, correct, us, tflops}."""
     src_path = str(SCRATCH / tag_for(tier, k) / "kernel.cu")
     cubin_path = src_path[:-3] + f"_{arch}.cubin"
-    res = {"tier": tier["dir"], **k, "launched": False, "rel_err": None,
-           "correct": False, "error": None}
+    res = {"tier": tier["dir"], **k, "launched": False, "correct": False,
+           "error": None, "perf": {}}
     mod = None
     try:
         with open(cubin_path, "rb") as f:
             cubin = f.read()
         mod = rt.cu(driver.cuModuleLoadData(cubin))
         kernel = rt.cu(driver.cuModuleGetFunction(mod, tier["symbol"].encode()))
-        grid, block, shared = launch_spec(tier, k, M, N, K)
-        rt.cu(driver.cuFuncSetAttribute(
-            kernel, driver.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shared))
-
-        if A is None:
-            torch.manual_seed(0)
-            A = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
-            B = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
-            C_ref = (A.float() @ B.float()).to(torch.bfloat16)
-        C = torch.zeros(M, N, dtype=torch.bfloat16, device="cuda")
-        A_tmap = rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=A.data_ptr(),
-            global_dim=[K, M], global_strides=[K * 2], box_dim=[k["bk"], k["bm"]],
-            element_strides=[1, 1], swizzle=rt.TMA_SWIZZLE_128B)
-        B_tmap = rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=B.data_ptr(),
-            global_dim=[N, K], global_strides=[N * 2], box_dim=[64, k["bk"]],
-            element_strides=[1, 1], swizzle=rt.TMA_SWIZZLE_128B)
-        args = [(ctypes.c_byte * 128).from_buffer_copy(A_tmap.tobytes()),
-                (ctypes.c_byte * 128).from_buffer_copy(B_tmap.tobytes()),
-                ctypes.c_void_p(C.data_ptr()),
-                ctypes.c_int(M), ctypes.c_int(N), ctypes.c_int(K)]
-        rt.launch(kernel, grid=grid, block=block, shared=shared, args=args)
-        res["launched"] = True
-        rel = (C.float() - C_ref.float()).abs().max().item() / C_ref.float().abs().max().item()
-        res["rel_err"] = rel
-        res["correct"] = rel < 5e-2
+        overall = True
+        for sh in shapes:
+            M, N, K = sh["M"], sh["N"], sh["K"]
+            grid, block, shared = launch_spec(tier, k, M, N, K)
+            rt.cu(driver.cuFuncSetAttribute(
+                kernel, driver.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shared))
+            A_tmap = rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=sh["A"].data_ptr(),
+                global_dim=[K, M], global_strides=[K * 2], box_dim=[k["bk"], k["bm"]],
+                element_strides=[1, 1], swizzle=rt.TMA_SWIZZLE_128B)
+            B_tmap = rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=sh["B"].data_ptr(),
+                global_dim=[N, K], global_strides=[N * 2], box_dim=[64, k["bk"]],
+                element_strides=[1, 1], swizzle=rt.TMA_SWIZZLE_128B)
+            args = [(ctypes.c_byte * 128).from_buffer_copy(A_tmap.tobytes()),
+                    (ctypes.c_byte * 128).from_buffer_copy(B_tmap.tobytes()),
+                    ctypes.c_void_p(sh["C"].data_ptr()),
+                    ctypes.c_int(M), ctypes.c_int(N), ctypes.c_int(K)]
+            sh["C"].zero_()
+            rt.launch(kernel, grid=grid, block=block, shared=shared, args=args)
+            res["launched"] = True
+            rel = (sh["C"].float() - sh["C_ref"].float()).abs().max().item() \
+                / sh["C_ref"].float().abs().max().item()
+            correct = rel < 5e-2
+            overall &= correct
+            entry = {"rel_err": rel, "correct": correct, "us": None, "tflops": None}
+            if do_bench and correct:
+                us = rt.time_kernel_us(lambda: rt.launch(
+                    kernel, grid=grid, block=block, shared=shared, args=args, sync=False))
+                entry["us"] = us
+                entry["tflops"] = (2.0 * M * N * K) / (us * 1e-6) / 1e12
+            res["perf"][str(M)] = entry
+        res["correct"] = overall
     except Exception as e:  # noqa: BLE001 — record any failure, keep going
         res["error"] = f"{type(e).__name__}: {e}"
         try:
@@ -174,19 +182,29 @@ def build_to_run(tier_dirs, invalid_sample):
     return to_run, len(valid), len(invalid), len(inv_sample)
 
 
-def worker_loop(to_run, start, device, arch, M, N, K, jsonl_path):
+def make_shapes(shape_list):
+    """Precompute A, B, C, C_ref tensors once per shape (seed-fixed)."""
+    shapes = []
+    for (M, N, K) in shape_list:
+        torch.manual_seed(0)
+        A = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+        B = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
+        shapes.append({"M": M, "N": N, "K": K, "A": A, "B": B,
+                       "C": torch.zeros(M, N, dtype=torch.bfloat16, device="cuda"),
+                       "C_ref": (A.float() @ B.float()).to(torch.bfloat16)})
+    return shapes
+
+
+def worker_loop(to_run, start, arch, shape_list, jsonl_path):
     """Launch combos [start:] in one CUDA context, appending one JSON
-    line per combo.  On any CUDA fault the context is poisoned, so we
-    record the offending combo and exit non-zero; the orchestrator
-    respawns a fresh worker at the next index."""
-    torch.manual_seed(0)
-    A = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
-    B = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
-    C_ref = (A.float() @ B.float()).to(torch.bfloat16)
+    line per combo (with per-shape correctness + perf).  On any CUDA
+    fault the context is poisoned, so we record the offending combo and
+    exit non-zero; the orchestrator respawns a fresh worker past idx."""
+    shapes = make_shapes(shape_list)
     f = open(jsonl_path, "a")
     for idx in range(start, len(to_run)):
         tier, k, label = to_run[idx]
-        r = launch_from_cubin(tier, k, device, arch, M, N, K, A=A, B=B, C_ref=C_ref)
+        r = launch_from_cubin(tier, k, arch, shapes, do_bench=(label == "valid"))
         r["validator"] = label
         r["idx"] = idx
         f.write(json.dumps(r) + "\n")
@@ -201,7 +219,8 @@ def worker_loop(to_run, start, device, arch, M, N, K, jsonl_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shape", type=int, default=2048)
+    ap.add_argument("--perf-shapes", default="4096,8192",
+                    help="comma-separated square shapes (M=N=K) to check + benchmark")
     ap.add_argument("--tiers", default="tier1_baseline,tier2_multistage_ws,tier3_cluster_swizzle")
     ap.add_argument("--invalid-sample", type=int, default=12)
     ap.add_argument("--json", default=None)
@@ -212,7 +231,7 @@ def main():
     ap.add_argument("--jsonl", default=None, help="internal: worker append path")
     args = ap.parse_args()
 
-    M = N = K = args.shape
+    shape_list = [(int(s), int(s), int(s)) for s in args.perf_shapes.split(",")]
     tier_dirs = args.tiers.split(",")
     SCRATCH.mkdir(parents=True, exist_ok=True)
     to_run, n_valid, n_invalid, n_sample = build_to_run(tier_dirs, args.invalid_sample)
@@ -222,11 +241,23 @@ def main():
 
     # ── Worker mode: just launch from `start`, stream results, exit ──
     if args.launch_worker is not None:
-        worker_loop(to_run, args.launch_worker, device, arch, M, N, K, args.jsonl)
+        worker_loop(to_run, args.launch_worker, arch, shape_list, args.jsonl)
         return  # unreachable (worker_loop exits)
 
-    print(f"# shape {M}^3 | arch={arch} | tiers={tier_dirs}")
+    print(f"# perf shapes {[s[0] for s in shape_list]} | arch={arch} | tiers={tier_dirs}")
     print(f"# {n_valid} valid combos to run, {n_invalid} invalid ({n_sample} sampled)")
+
+    # ── cuBLAS reference TFLOPS per shape (one do_bench each) ────────
+    cublas_tflops = {}
+    for (M, N, K) in shape_list:
+        torch.manual_seed(0)
+        A = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+        B = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
+        us = rt.time_kernel_us(lambda: torch.mm(A, B))   # A:(M,K) @ B:(K,N)
+        cublas_tflops[str(M)] = (2.0 * M * N * K) / (us * 1e-6) / 1e12
+        print(f"# cuBLAS {M}^3: {cublas_tflops[str(M)]:.0f} TFLOPS", flush=True)
+        del A, B
+    torch.cuda.empty_cache()
 
     # ── Phase 1: render + parallel nvcc compile (CPU-bound) ──────────
     for (t, k, _) in to_run:
@@ -252,7 +283,7 @@ def main():
         n_spawns += 1
         cmd = [sys.executable, os.path.abspath(__file__),
                "--launch-worker", str(next_idx), "--jsonl", jsonl,
-               "--shape", str(M), "--tiers", args.tiers,
+               "--perf-shapes", args.perf_shapes, "--tiers", args.tiers,
                "--invalid-sample", str(args.invalid_sample)]
         subprocess.run(cmd)
         done = set()
@@ -287,7 +318,7 @@ def main():
     for idx, (tier, k, label) in enumerate(to_run):
         if idx not in results:
             results[idx] = {"tier": tier["dir"], **k, "validator": label,
-                            "launched": False, "rel_err": None, "correct": False,
+                            "launched": False, "correct": False, "perf": {},
                             "error": "worker crashed before recording"}
     ordered = [results[i] for i in range(len(to_run))]
 
@@ -295,31 +326,55 @@ def main():
     surprises = [r for r in ordered if r["validator"] == "invalid" and r["correct"]]
     for r in bad:
         print(f"BAD  {r['tier']:24} bn{r['bn']:>3} ns{r['ns']} gsm{r['gsm']:>2} nw{r['nw']:>2}  "
-              f"rel={r['rel_err']}  {r['error'] or ''}")
+              f"{r.get('error') or 'incorrect'}")
     for r in surprises:
-        print(f"INVALID-but-WORKS  {r['tier']} bn{r['bn']} ns{r['ns']} gsm{r['gsm']} nw{r['nw']}  rel={r['rel_err']}")
+        print(f"INVALID-but-WORKS  {r['tier']} bn{r['bn']} ns{r['ns']} gsm{r['gsm']} nw{r['nw']}")
 
+    # Best (max-TFLOPS) valid combo per tier at the largest shape.
+    big = str(shape_list[-1][0])
     print("\n=== SUMMARY ===")
     print(f"valid combos run:        {n_valid}   (worker spawns: {n_spawns})")
     print(f"  compiled OK:           {n_comp_ok}/{len(jobs)} (incl. invalid sample)")
     print(f"  validator-valid BAD:   {len(bad)}   (must be 0)")
     print(f"invalid combos sampled:  {n_sample}")
     print(f"  invalid-but-correct:   {len(surprises)}   (investigate if > 0)")
+    for (M, N, K) in shape_list:
+        print(f"cuBLAS {M}^3: {cublas_tflops[str(M)]:.0f} TFLOPS")
+    for tdir in tier_dirs:
+        cand = [r for r in ordered if r["tier"] == tdir and r["validator"] == "valid"
+                and r.get("perf", {}).get(big, {}).get("tflops")]
+        if cand:
+            best = max(cand, key=lambda r: r["perf"][big]["tflops"])
+            tf = best["perf"][big]["tflops"]
+            ratio = tf / cublas_tflops[big]
+            print(f"best {tdir:24} @ {big}^3: {tf:.0f} TFLOPS ({ratio:.0%} cuBLAS)  "
+                  f"bn{best['bn']} ns{best['ns']} gsm{best['gsm']} nw{best['nw']}")
 
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(ordered, indent=2))
         print(f"wrote {args.json}")
 
-    # ── Committed compatibility matrix (the app filters against this) ─
+    # ── Committed compatibility matrix (the app filters + perf source) ─
     compat_path = args.compat_out or str(WEBUI / "kernels" / "compat_matrix.json")
-    entries = [{k: r[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw")}
-               | {"correct": bool(r["correct"]),
-                  "rel_err": (round(r["rel_err"], 5) if r["rel_err"] is not None else None)}
-               for r in ordered if r["validator"] == "valid"]
+    entries = []
+    for r in ordered:
+        if r["validator"] != "valid":
+            continue
+        perf = {}
+        for s, p in (r.get("perf") or {}).items():
+            tf = p.get("tflops")
+            perf[s] = {
+                "rel_err": round(p["rel_err"], 5) if p.get("rel_err") is not None else None,
+                "tflops": round(tf, 1) if tf is not None else None,
+                "vs_cublas": round(tf / cublas_tflops[s], 4) if (tf and cublas_tflops.get(s)) else None,
+            }
+        entries.append({k: r[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw")}
+                       | {"correct": bool(r["correct"]), "perf": perf})
     matrix = {
         "generated_by": "webui/tests/gpu_codegen_driver.py",
         "arch": arch,
-        "validated_shape": [M, N, K],
+        "perf_shapes": [s[0] for s in shape_list],
+        "cublas_tflops": {s: round(v, 1) for s, v in cublas_tflops.items()},
         "tolerance_rel_err": 5e-2,
         "n_entries": len(entries),
         "n_correct": sum(e["correct"] for e in entries),

@@ -275,33 +275,6 @@ def render_host(tier: dict, bm, bn, bk, ns, gsm, nw) -> str:
     return f"{header}\n{runtime}\n\n# ===== tier launcher =====\n\n{launcher}"
 
 
-# ── Pre-baked benchmark lookup (placeholder until the GPU test feeds it) ─
-
-PRE_BAKED = {
-    ("tier1_baseline", 2): {(2048, 2048, 2048): 541, (4096, 4096, 4096): 758, (8192, 8192, 8192): 830},
-    ("tier1_baseline", 3): {(2048, 2048, 2048): 621, (4096, 4096, 4096): 819, (8192, 8192, 8192): 915},
-    ("tier1_baseline", 4): {(2048, 2048, 2048): 621, (4096, 4096, 4096): 825, (8192, 8192, 8192): 930},
-    ("tier2_multistage_ws", 2):   {(8192, 8192, 8192): 1110},
-    ("tier3_cluster_swizzle", 5): {(8192, 8192, 8192): 1272},
-}
-CUBLAS_REF = {(4096, 4096, 4096): 1413, (8192, 8192, 8192): 1461, (16384, 16384, 16384): 1490}
-
-DEFAULT_NON_NS_KNOBS = {
-    "tier1_baseline":        {"BM": 128, "BN": 256, "BK": 64, "GROUP_SIZE_M": 8, "NUM_WARPS": 4},
-    "tier2_multistage_ws":   {"BM": 128, "BN": 256, "BK": 64, "GROUP_SIZE_M": 1, "NUM_WARPS": 4},
-    "tier3_cluster_swizzle": {"BM": 128, "BN": 256, "BK": 64, "GROUP_SIZE_M": 8, "NUM_WARPS": 4},
-}
-
-
-def lookup_tflops(tier_dir, *, ns, shape, bm, bn, bk, gsm, nw):
-    """Return the pre-baked TFLOPS, or None if the config isn't cached."""
-    defaults = DEFAULT_NON_NS_KNOBS.get(tier_dir, {})
-    user_non_ns = {"BM": bm, "BN": bn, "BK": bk, "GROUP_SIZE_M": gsm, "NUM_WARPS": nw}
-    if user_non_ns != defaults:
-        return None
-    return PRE_BAKED.get((tier_dir, ns), {}).get(shape)
-
-
 def parse_shapes(text: str):
     out = []
     for line in text.strip().splitlines():
@@ -349,3 +322,22 @@ def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw):
     if e is None:
         return "unknown", None
     return ("verified" if e["correct"] else "failed"), e
+
+
+def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, shape_m):
+    """Return the measured {rel_err, tflops, vs_cublas} for this combo at a
+    square shape (M=N=K=shape_m), or None if not in the matrix."""
+    e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw))
+    if e is None:
+        return None
+    return (e.get("perf") or {}).get(str(shape_m))
+
+
+def cublas_tflops(shape_m):
+    """Measured cuBLAS TFLOPS at a square shape, or None."""
+    return load_compat().get("cublas_tflops", {}).get(str(shape_m))
+
+
+def perf_shapes():
+    """Square shapes (ints) the compat matrix recorded performance at."""
+    return load_compat().get("perf_shapes", [])

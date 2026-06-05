@@ -138,10 +138,13 @@ else:
     # Empirical ground truth from the committed B200 compatibility matrix.
     status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw)
     cm = mc.load_compat()
-    shape = cm.get("validated_shape")
     if status == "verified":
-        st.success(f"✅ Empirically verified on B200 ({cm.get('arch','sm_100a')}) at "
-                   f"{shape[0]}³: compiles, runs, correct (rel err {entry['rel_err']:.2%}).")
+        biggest = max(mc.perf_shapes()) if mc.perf_shapes() else None
+        p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, biggest) if biggest else None
+        msg = f"✅ Empirically verified on B200 ({cm.get('arch', 'sm_100a')}): compiles, runs, correct."
+        if p and p.get("tflops"):
+            msg += f"  {p['tflops']:.0f} TFLOPS at {biggest}³ ({p['vs_cublas']:.0%} of cuBLAS)."
+        st.success(msg)
     elif status == "failed":
         st.error("❌ This combination is in the B200 compatibility matrix as **failing** "
                  "at runtime despite passing static checks — do not use.")
@@ -155,7 +158,7 @@ else:
 kernel_src = mc.render_kernel(tier, bm, bn, bk, ns, gsm, nw)
 host_src   = mc.render_host(tier, bm, bn, bk, ns, gsm, nw)
 
-tab_kernel, tab_host, tab_bench = st.tabs(["Kernel code", "Host code (self-contained)", "Benchmark (pre-baked)"])
+tab_kernel, tab_host, tab_bench = st.tabs(["Kernel code", "Host code (self-contained)", "Benchmark (measured on B200)"])
 
 with tab_kernel:
     st.code(kernel_src, language="cpp", line_numbers=True)
@@ -168,26 +171,27 @@ with tab_host:
                        file_name=f"host_{tier['dir']}.py", mime="text/x-python")
 
 with tab_bench:
-    st.caption("Benchmark numbers are **pre-baked** (Streamlit Cloud has no GPU).  Download the "
-               "kernel + host and run `python host.py` on a B200 to reproduce.")
+    pshapes = mc.perf_shapes()
+    st.caption(f"Numbers are **measured on a real B200** ({cm.get('arch', 'sm_100a')}) for this exact "
+               f"config, recorded at {', '.join(f'{s}³' for s in pshapes)} via `do_bench`.  "
+               "Download the kernel + host to reproduce.")
     rows = []
     for (m, n, k) in mc.parse_shapes(shapes_text):
-        tf = mc.lookup_tflops(tier["dir"], ns=ns, shape=(m, n, k), bm=bm, bn=bn, bk=bk, gsm=gsm, nw=nw)
-        cub = mc.CUBLAS_REF.get((m, n, k))
+        square = (m == n == k)
+        p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m) if square else None
+        cub = mc.cublas_tflops(m) if square else None
         rows.append({
-            "Shape": f"{m}³" if (m == n == k) else f"{m}×{n}×{k}",
-            "TFLOPS (pre-baked)": f"{tf:.0f}" if tf else "—",
+            "Shape": f"{m}³" if square else f"{m}×{n}×{k}",
+            "TFLOPS (B200)": f"{p['tflops']:.0f}" if (p and p.get("tflops")) else "—",
             "cuBLAS TFLOPS": f"{cub:.0f}" if cub else "—",
-            "vs cuBLAS": f"{tf / cub:.0%}" if (tf and cub) else "—",
+            "vs cuBLAS": f"{p['vs_cublas']:.0%}" if (p and p.get("vs_cublas")) else "—",
         })
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True)
     else:
         st.info("Enter at least one valid `M,N,K` shape in the sidebar.")
-    defaults = mc.DEFAULT_NON_NS_KNOBS.get(tier["dir"], {})
-    st.caption("Pre-baked numbers apply only at this tier's default non-NS knobs: "
-               + ", ".join(f"`{k}={v}`" for k, v in defaults.items())
-               + f".  You picked NS={ns}; other deviations show —.")
+    st.caption(f"Measured TFLOPS exist only for the swept shapes ({', '.join(f'{s}³' for s in pshapes)}) "
+               "and matrix-covered knob combos; other shapes/combos show —.")
 
 
 # ── Footer ────────────────────────────────────────────────────────────
