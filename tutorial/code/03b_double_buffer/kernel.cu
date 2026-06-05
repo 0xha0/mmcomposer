@@ -338,21 +338,27 @@ extern "C" __global__ void matmul_dbuf(
 
     // ── Coalesced 2-phase epilogue (generalized from ch07) ──────────
     //
-    // Phase 1: each warp processes one or more contiguous 32-row
-    // TMEM stripes via a stride-NUM_WARPS loop over stripe indices.
-    // Lane L within a warp reads TMEM row stripe*32 + L; the inner
-    // n-loop walks all BN cols in 8-col chunks (tcgen05.ld.32x32b.x8).
+    // Phase 1 MUST be partitioned by 32-row stripes, one stripe per
+    // warp — NOT by columns.  This is a hard tcgen05 constraint:
+    // `tcgen05.ld` hardwires warp_id → TMEM row group.  Warp W can
+    // only read TMEM rows [W·32, W·32+32); the row field of the ld
+    // address cannot redirect it to another warp's rows.  (Verified:
+    // a column-division layout where warp W reads every stripe but
+    // only its BN/NW columns gives a perfect diagonal of correctness
+    // — only the cell where stripe==warp_id is right, because the
+    // hardware always returns warp W its own rows regardless of the
+    // address.)
     //
-    // The single constraint is BM % 32 == 0 (32-row chunks divide
-    // evenly).  When BM/32 ≥ NUM_WARPS, every warp processes
-    // (BM/32)/NUM_WARPS stripes (the BM=128/NW=4 case is exactly the
-    // original ch07).  When BM/32 < NUM_WARPS, only the first BM/32
-    // warps enter the loop; the rest skip Phase 1 (they still help
-    // in Phase 2's all-threads flat-walk store).
+    // So each warp reads its own stripe and walks all BN cols via the
+    // inner n-loop.  Constraint BM % 32 == 0.  When BM/32 ≥ NUM_WARPS,
+    // a warp does (BM/32)/NUM_WARPS stripes (stride-NW); when
+    // BM/32 < NUM_WARPS, only the first BM/32 warps run Phase 1 (the
+    // rest still help Phase 2's flat-walk store).  This is also why
+    // NW > BM/32 gives no Phase-1 speedup — there are only BM/32
+    // stripes to hand out.
     //
     // Examples (BN=256):
     //   BM=128, NW=4 → 4 stripes / 4 warps = 1 stripe/warp
-    //   BM=64,  NW=4 → 2 stripes / 4 warps = warps 0,1 active
     //   BM=128, NW=8 → 4 stripes / 8 warps = warps 0..3 active
     auto C_sh = reinterpret_cast<__nv_bfloat16(*)[BN_PAD]>(smem);
 
