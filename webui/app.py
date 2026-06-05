@@ -115,6 +115,13 @@ with st.sidebar:
              "descriptor uses SWIZZLE_128B, which constrains the inner box "
              "to one 128 B swizzle atom = 64 BF16 elements.",
     )
+    ns  = st.selectbox(
+        "NS (pipeline stages)", [2, 3, 4, 5, 6, 7], index=0,
+        help="Number of SMEM ring slots — how many K-tiles can be in flight "
+             "at once.  NS=2 is plain double buffering; NS>2 lets multiple "
+             "TMA loads pipeline in front of the MMAs.  Capped by SMEM: "
+             "NS × (A_slot + B_slot) ≤ 228 KB per CTA.",
+    )
     gsm = st.selectbox(
         "CTA swizzling factor (GSM)", [1, 2, 4, 8, 16, 32], index=3,
         help="Chunked block-id rasterization for L2 reuse on B.  GSM CTAs in "
@@ -170,7 +177,7 @@ with st.sidebar:
 
 if generate:
     st.session_state.applied = dict(
-        bm=bm, bn=bn, bk=bk, gsm=gsm, nw=nw,
+        bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
         ms_ws=ms_ws, two_cta=two_cta,
         shapes_text=shapes_text,
     )
@@ -184,7 +191,7 @@ if "applied" not in st.session_state:
 
 cfg = st.session_state.applied
 bm, bn, bk          = cfg["bm"], cfg["bn"], cfg["bk"]
-gsm, nw             = cfg["gsm"], cfg["nw"]
+ns, gsm, nw         = cfg["ns"], cfg["gsm"], cfg["nw"]
 ms_ws, two_cta      = cfg["ms_ws"], cfg["two_cta"]
 shapes_text         = cfg["shapes_text"]
 
@@ -211,9 +218,15 @@ if tier.get("pending"):
 
 # ── Validation — run at Generate-time, before showing the code ──────
 
-def validate_config(bm, bn, bk, gsm, nw, chapter):
+def validate_config(bm, bn, bk, ns, gsm, nw, chapter):
     """Return a list of human-readable warnings.  Empty list = clean."""
     out = []
+    if ns < 2:
+        out.append(
+            f"**NS = {ns}** must be ≥ 2.  NS=2 is the minimum for the "
+            "double-buffer overlap; NS=1 would serialize TMA and MMA on "
+            "the same slot."
+        )
     # SWIZZLE_128B forces the TMA inner-box dim to be exactly one
     # 128 B swizzle atom = 64 BF16 elements.  BK is the inner dim on
     # A's box ([BK, BM]) and on K-major B's box ([BK, ...]), so BK
@@ -245,22 +258,25 @@ def validate_config(bm, bn, bk, gsm, nw, chapter):
             f"{nw * 32 * 8}` — Phase-2 epilogue flat walk leaves uncovered "
             "output positions."
         )
-    # SMEM budget (B200 = 228 KB/CTA).
-    a_slot = bm * bk * 2
-    b_slot = bn * bk * 2
-    slot   = a_slot + b_slot
-    ns     = 2   # baseline
-    epi    = bm * (bn + 8) * 2
-    smem   = max(ns * slot, epi) + 1024
+    # SMEM budget (B200 = 228 KB/CTA).  K-loop ring (NS × slot) and
+    # epilogue staging share the same dynamic SMEM region but are
+    # time-disjoint, so the launcher sizes for max of the two.
+    a_slot   = bm * bk * 2
+    b_slot   = bn * bk * 2
+    slot     = a_slot + b_slot
+    epi      = bm * (bn + 8) * 2
+    smem     = max(ns * slot, epi) + 1024
     if smem > 228 * 1024:
         out.append(
             f"**SMEM usage {smem/1024:.0f} KB > B200 cap (228 KB)** at "
-            f"(BM={bm}, BN={bn}, BK={bk}, NS={ns}).  Kernel will fail to launch."
+            f"(BM={bm}, BN={bn}, BK={bk}, NS={ns}): "
+            f"K-loop ring = {ns} × {slot//1024} KB = {ns*slot//1024} KB, "
+            f"epilogue staging = {epi//1024} KB.  Kernel will fail to launch."
         )
     return out
 
 
-config_warnings = validate_config(bm, bn, bk, gsm, nw, tier["chapter"])
+config_warnings = validate_config(bm, bn, bk, ns, gsm, nw, tier["chapter"])
 if config_warnings:
     st.error(
         f"⚠️  **{len(config_warnings)} configuration warning(s)** — the substituted "
@@ -336,7 +352,7 @@ def substitute_main_constants(src: str | None, **values) -> str | None:
     return src
 
 
-KNOBS = {"BM": bm, "BN": bn, "BK": bk, "NS": 2, "GROUP_SIZE_M": gsm, "NUM_WARPS": nw}
+KNOBS = {"BM": bm, "BN": bn, "BK": bk, "NS": ns, "GROUP_SIZE_M": gsm, "NUM_WARPS": nw}
 kernel_view = substitute_kernel_constexprs(kernel_src, **KNOBS)
 main_view   = substitute_main_constants(main_src, **KNOBS)
 
@@ -346,14 +362,41 @@ main_view   = substitute_main_constants(main_src, **KNOBS)
 # A real implementation would index a JSON file by
 # (tier, BM, BN, BK, GSM, NW, shape).  For the MVP we ship the b41_w8
 # numbers at M=N=K=8192 as a placeholder so the layout is real.
+# Indexed by (chapter, NS) → {(M, N, K): TFLOPS}.
+# Only valid when the other knobs (BM, BN, BK, GSM, NUM_WARPS) are at
+# the chapter default — otherwise we don't have a number and show "—".
 PRE_BAKED = {
-    "03b_double_buffer":     {(2048, 2048, 2048): 540,
-                              (4096, 4096, 4096): 770,
-                              (8192, 8192, 8192): 832},
-    "07_coalesced_epilogue": {(8192, 8192, 8192): 1110},
-    "09_cta_swizzle":        {(8192, 8192, 8192): 1272},
+    ("03b_double_buffer", 2): {(2048, 2048, 2048): 541,
+                               (4096, 4096, 4096): 758,
+                               (8192, 8192, 8192): 830},
+    ("03b_double_buffer", 3): {(2048, 2048, 2048): 621,
+                               (4096, 4096, 4096): 819,
+                               (8192, 8192, 8192): 915},
+    ("03b_double_buffer", 4): {(2048, 2048, 2048): 621,
+                               (4096, 4096, 4096): 825,
+                               (8192, 8192, 8192): 930},
+    ("07_coalesced_epilogue", 2): {(8192, 8192, 8192): 1110},
+    ("09_cta_swizzle", 5):        {(8192, 8192, 8192): 1272},
 }
 CUBLAS_REF = {(4096, 4096, 4096): 1413, (8192, 8192, 8192): 1461, (16384, 16384, 16384): 1490}
+
+# Each chapter has a "default-knob" set; if the user deviates from any
+# of these (other than NS, which keys the pre-baked table), no cached
+# number applies and the bench tab shows "—".
+DEFAULT_NON_NS_KNOBS = {
+    "03b_double_buffer":     {"BM": 128, "BN": 256, "BK": 64, "GROUP_SIZE_M": 8,  "NUM_WARPS": 4},
+    "07_coalesced_epilogue": {"BM": 128, "BN": 256, "BK": 64, "GROUP_SIZE_M": 1,  "NUM_WARPS": 4},
+    "09_cta_swizzle":        {"BM": 128, "BN": 256, "BK": 64, "GROUP_SIZE_M": 8,  "NUM_WARPS": 4},
+}
+
+
+def lookup_tflops(chapter, *, ns, shape, bm, bn, bk, gsm, nw):
+    """Return the pre-baked TFLOPS, or None if the config isn't cached."""
+    defaults = DEFAULT_NON_NS_KNOBS.get(chapter, {})
+    user_non_ns = {"BM": bm, "BN": bn, "BK": bk, "GROUP_SIZE_M": gsm, "NUM_WARPS": nw}
+    if user_non_ns != defaults:
+        return None
+    return PRE_BAKED.get((chapter, ns), {}).get(shape)
 
 
 def parse_shapes(text: str):
@@ -411,14 +454,15 @@ with tab_bench:
     )
     rows = []
     for (m, n, k) in shapes:
-        ch_lookup = PRE_BAKED.get(tier["chapter"], {})
-        tf = ch_lookup.get((m, n, k))
+        tf = lookup_tflops(tier["chapter"],
+                           ns=ns, shape=(m, n, k),
+                           bm=bm, bn=bn, bk=bk, gsm=gsm, nw=nw)
         cublas = CUBLAS_REF.get((m, n, k))
         tf_str = f"{tf:.0f}" if tf else "—"
         cublas_str = f"{cublas:.0f}" if cublas else "—"
         ratio = f"{tf/cublas:.0%}" if (tf and cublas) else "—"
         rows.append({
-            "Shape (M=N=K)": f"{m}^3" if (m == n == k) else f"{m}×{n}×{k}",
+            "Shape": f"{m}³" if (m == n == k) else f"{m}×{n}×{k}",
             "TFLOPS (pre-baked)": tf_str,
             "cuBLAS TFLOPS": cublas_str,
             "vs cuBLAS": ratio,
@@ -428,8 +472,11 @@ with tab_bench:
     else:
         st.info("Enter at least one valid `M,N,K` shape in the sidebar.")
     st.caption(
-        "Only shapes with cached numbers show real values; others display "
-        "`—`.  The cache will grow as the MVP fills out."
+        f"Pre-baked numbers only apply when **non-NS knobs are at the chapter "
+        f"default**.  This chapter's defaults: "
+        + ", ".join(f"`{k}={v}`" for k, v in DEFAULT_NON_NS_KNOBS.get(tier['chapter'], {}).items())
+        + f".  NS is keyed separately (you picked NS={ns}); any other knob "
+        f"deviating from the default shows `—`."
     )
 
 

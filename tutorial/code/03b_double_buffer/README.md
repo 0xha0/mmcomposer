@@ -28,7 +28,7 @@ move up to ch09 (cluster MMA + chunked walk).
 | TMA 2D loads, A and B descriptors | ch00, ch01 |
 | `tcgen05.mma` async tensor cores via TMEM | ch02 |
 | Outer K-loop accumulating into one TMEM | ch03 |
-| 2-slot SMEM ring buffer (NS=2 hardcoded) | ch04 |
+| NS-slot SMEM ring buffer (NS user-tunable, ≥ 2) | ch04 |
 | K-major B descriptor (`idesc` bit 16, LBO) | ch06 |
 | Coalesced 2-phase SMEM-staged epilogue | ch07 |
 | Templated `GROUP_SIZE_M` CTA swizzle | ch09 |
@@ -38,8 +38,14 @@ move up to ch09 (cluster MMA + chunked walk).
 - **Warp specialization.**  One warp does all the TMA issue + MMA
   issue + commit work, serially.  This is the load-bearing thing
   the MVP's "Multi-staging + warp specialization" toggle turns on.
-- **Deeper multi-stage (NS > 2).**  NS=2 is hardcoded — the
-  "double buffer" name.
+- **Warp specialization to *fully* exploit NS > 2.**  The kernel
+  accepts NS ≥ 2 (it's a user knob), so you can run it as a real
+  multi-stage pipeline; but without the warp-spec producer/consumer
+  split, the single warp serializes TMA-issue and MMA-issue each
+  iteration, so the extra slots only buy latency hiding from the
+  async TMA hardware — not from independent warp scheduling.  The
+  "double buffer" name describes NS=2 (the default), the cleanest
+  point on the no-warp-spec design.
 - **Cluster MMA.**  Single-CTA only.  No `__cluster_dims__`, no
   `cta_group::2`.
 

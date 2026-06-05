@@ -31,7 +31,7 @@
 constexpr int BM           = 128;
 constexpr int BN           = 256;
 constexpr int BK           = 64;
-constexpr int NS           = 2;       // multi-stage depth ("double buffer" = 2)
+constexpr int NS           = 2;       // SMEM ring depth (2 = double buffer; >2 = multi-stage)
 constexpr int GROUP_SIZE_M = 8;       // CTA-swizzle chunk (1 = no swizzle)
 constexpr int NUM_WARPS    = 4;       // total warps per CTA
 
