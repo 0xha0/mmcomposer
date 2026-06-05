@@ -12,6 +12,7 @@ constexpr int BK           = 64;
 constexpr int NS           = 2;       // SMEM ring depth (2 = double buffer; >2 = multi-stage)
 constexpr int GROUP_SIZE_M = 8;       // CTA-swizzle chunk (1 = no swizzle)
 constexpr int NUM_WARPS    = 4;       // total warps per CTA
+constexpr int TMA_STORE    = 0;       // epilogue Phase 2: 0 = int4 stores, 1 = async TMA store
 
 // ── Derived constants (do not edit) ─────────────────────────────────
 constexpr int MMA_K             = 16;
@@ -149,14 +150,33 @@ __device__ __forceinline__ void mbarrier_wait_phase(uint32_t mb, uint32_t phase)
 // template) — this is what lets the webui's regex substitution treat
 // every knob uniformly.  GROUP_SIZE_M=1 collapses to the natural
 // N-fast walk; >1 swaps to a chunked M-fast walk for L2 reuse on B.
+// ── TMA store helpers (epilogue Phase 2 when TMA_STORE=1) ───────────
+__device__ __forceinline__ void tma_2d_store(
+    const void* tmap, uint32_t smem_src, int x, int y
+) {
+    asm volatile(
+        "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group "
+        "[%0, {%1, %2}], [%3];"
+        :: "l"(tmap), "r"(x), "r"(y), "r"(smem_src) : "memory");
+}
+__device__ __forceinline__ void tma_commit_group() {
+    asm volatile("cp.async.bulk.commit_group;" ::: "memory");
+}
+template <int N>
+__device__ __forceinline__ void tma_wait_group() {
+    asm volatile("cp.async.bulk.wait_group.read %0;" :: "n"(N) : "memory");
+}
+
 extern "C" __global__ void matmul_dbuf(
     const __grid_constant__ CUtensorMap A_tmap_,
     const __grid_constant__ CUtensorMap B_tmap_,
+    const __grid_constant__ CUtensorMap C_tmap_,
     __nv_bfloat16* __restrict__ C_ptr,
     int M, int N, int K
 ) {
     const CUtensorMap* A_tmap = &A_tmap_;
     const CUtensorMap* B_tmap = &B_tmap_;
+    const CUtensorMap* C_tmap_ptr = &C_tmap_;
     // ── CTA-swizzle: derive (bid_m, bid_n) from blockIdx.x  ─────────
     //
     // Same chunked walk as ch09 but at the single-CTA granularity
@@ -315,6 +335,7 @@ extern "C" __global__ void matmul_dbuf(
     const int cta_rank      = 0;       // single CTA
     const int off_m_cluster = off_m;   // single-CTA tile origin
 #define EPI_DEALLOC(t, n) tcgen05_dealloc((t), (n))
+    // C_tmap_ptr already in scope (declared at top of kernel).
     // @@EPILOGUE@@
 #undef EPI_DEALLOC
 }

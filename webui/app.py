@@ -85,6 +85,11 @@ with st.sidebar:
                         help="`__cluster_dims__(2,1,1)` + `cta_group::2`: two CTAs cooperate in one "
                              "tcgen05.mma (half-B per CTA, doubles M per MMA).  Requires warp "
                              "specialization (toggle above).")
+    tma_store = st.toggle("TMA store epilogue", value=False,
+                          help="Epilogue Phase 2: write the result to GMEM with one async TMA store "
+                               "per CTA (swizzled SMEM staging) instead of all-thread int4 stores.  "
+                               "A universal toggle across tiers — often *not* a win (see the measured "
+                               "TFLOPS), kept as an honest mechanism comparison.")
 
     st.subheader("Problem shapes")
     shapes_text = st.text_area(
@@ -100,7 +105,8 @@ with st.sidebar:
 
 if generate:
     st.session_state.applied = dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
-                                    ms_ws=ms_ws, two_cta=two_cta, shapes_text=shapes_text)
+                                    ms_ws=ms_ws, two_cta=two_cta, tma_store=int(tma_store),
+                                    shapes_text=shapes_text)
 
 if "applied" not in st.session_state:
     st.info("Configure parameters in the sidebar, then click **🛠  Generate kernel**.")
@@ -110,6 +116,7 @@ cfg = st.session_state.applied
 bm, bn, bk = cfg["bm"], cfg["bn"], cfg["bk"]
 ns, gsm, nw = cfg["ns"], cfg["gsm"], cfg["nw"]
 ms_ws, two_cta = cfg["ms_ws"], cfg["two_cta"]
+tma_store = cfg["tma_store"]
 shapes_text = cfg["shapes_text"]
 
 
@@ -127,7 +134,7 @@ st.caption(tier["desc"])
 
 # ── Validate (static checker) ─────────────────────────────────────────
 
-warnings = mc.validate_config(bm, bn, bk, ns, gsm, nw, cluster=tier["cluster"])
+warnings = mc.validate_config(bm, bn, bk, ns, gsm, nw, cluster=tier["cluster"], tma_store=tma_store)
 if warnings:
     st.error(f"⚠️  **{len(warnings)} configuration warning(s)** — this combination won't run.  "
              "Fix in the sidebar and re-generate.")
@@ -142,11 +149,11 @@ else:
     cm = {}
     try:
         cm = mc.load_compat()
-        status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw)
+        status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw, tma_store=tma_store)
         pshapes = mc.perf_shapes()
         if status == "verified":
             biggest = max(pshapes) if pshapes else None
-            p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, biggest) if biggest else None
+            p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, biggest, tma_store=tma_store) if biggest else None
             msg = f"✅ Empirically verified on B200 ({cm.get('arch', 'sm_100a')}): compiles, runs, correct."
             if p and p.get("tflops"):
                 msg += f"  {p['tflops']:.0f} TFLOPS at {biggest}³ ({p['vs_cublas']:.0%} of cuBLAS)."
@@ -163,8 +170,8 @@ else:
 
 # ── Render kernel + self-contained host ──────────────────────────────
 
-kernel_src = mc.render_kernel(tier, bm, bn, bk, ns, gsm, nw)
-host_src   = mc.render_host(tier, bm, bn, bk, ns, gsm, nw)
+kernel_src = mc.render_kernel(tier, bm, bn, bk, ns, gsm, nw, tma_store=tma_store)
+host_src   = mc.render_host(tier, bm, bn, bk, ns, gsm, nw, tma_store=tma_store)
 
 tab_kernel, tab_host, tab_bench = st.tabs(["Kernel code", "Host code (self-contained)", "Benchmark (measured on B200)"])
 
@@ -190,7 +197,7 @@ with tab_bench:
     for (m, n, k) in mc.parse_shapes(shapes_text):
         square = (m == n == k)
         try:
-            p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m) if square else None
+            p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m, tma_store=tma_store) if square else None
             cub = mc.cublas_tflops(m) if square else None
         except Exception:
             p, cub = None, None

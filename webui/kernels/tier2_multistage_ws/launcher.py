@@ -21,12 +21,12 @@ BM, BN, BK   = 128, 256, 64
 NS           = 2
 GROUP_SIZE_M = 8
 NUM_WARPS    = 4
+TMA_STORE    = 0
 
 ELEM_BYTES   = 2
 THREADS      = NUM_WARPS * 32
 SLOT_BYTES   = BM * BK * ELEM_BYTES + BN * BK * ELEM_BYTES
-BN_PAD       = BN + 8
-EPI_BYTES    = BM * BN_PAD * ELEM_BYTES
+EPI_BYTES    = BM * (BN if TMA_STORE else BN + 8) * ELEM_BYTES
 SHARED_BYTES = max(NS * SLOT_BYTES, EPI_BYTES) + 1024
 HERE         = os.path.dirname(os.path.abspath(__file__))
 
@@ -57,11 +57,16 @@ def setup(M, N, K):
         dtype=TMA_BFLOAT16, rank=2, gptr=B.data_ptr(),
         global_dim=[N, K], global_strides=[N * ELEM_BYTES],
         box_dim=[64, BK], element_strides=[1, 1], swizzle=TMA_SWIZZLE_128B)
+    C_tmap = encode_tensor_map(
+        dtype=TMA_BFLOAT16, rank=2, gptr=C.data_ptr(),
+        global_dim=[N, M], global_strides=[N * ELEM_BYTES],
+        box_dim=[BN, BM], element_strides=[1, 1], swizzle=TMA_SWIZZLE_NONE)
 
     arg_a = (ctypes.c_byte * 128).from_buffer_copy(A_tmap.tobytes())
     arg_b = (ctypes.c_byte * 128).from_buffer_copy(B_tmap.tobytes())
+    arg_c_tmap = (ctypes.c_byte * 128).from_buffer_copy(C_tmap.tobytes())
     arg_c = ctypes.c_void_p(C.data_ptr())
-    args = [arg_a, arg_b, arg_c,
+    args = [arg_a, arg_b, arg_c_tmap, arg_c,
             ctypes.c_int(M), ctypes.c_int(N), ctypes.c_int(K)]
 
     grid = (M // BM * N // BN, 1, 1)

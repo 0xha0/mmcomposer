@@ -24,6 +24,7 @@ constexpr int BK           = 64;
 constexpr int NS           = 5;       // multi-stage SMEM ring depth
 constexpr int GROUP_SIZE_M = 8;       // CTA-swizzle chunk (1 = no swizzle)
 constexpr int NUM_WARPS    = 4;       // total warps per CTA
+constexpr int TMA_STORE    = 0;       // epilogue Phase 2: 0 = int4 stores, 1 = async TMA store
 
 // ── Derived constants (do not edit) ─────────────────────────────────
 constexpr int MMA_K     = 16;
@@ -200,9 +201,27 @@ __device__ __forceinline__ void mbarrier_wait_phase(uint32_t mb, uint32_t phase)
 
 
 // ── Kernel (NS, GROUP_SIZE_M are file-level constexpr knobs) ────────
+// ── TMA store helpers (epilogue Phase 2 when TMA_STORE=1) ───────────
+__device__ __forceinline__ void tma_2d_store(
+    const void* tmap, uint32_t smem_src, int x, int y
+) {
+    asm volatile(
+        "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group "
+        "[%0, {%1, %2}], [%3];"
+        :: "l"(tmap), "r"(x), "r"(y), "r"(smem_src) : "memory");
+}
+__device__ __forceinline__ void tma_commit_group() {
+    asm volatile("cp.async.bulk.commit_group;" ::: "memory");
+}
+template <int N>
+__device__ __forceinline__ void tma_wait_group() {
+    asm volatile("cp.async.bulk.wait_group.read %0;" :: "n"(N) : "memory");
+}
+
 __device__ __forceinline__ void matmul_cluster_impl(
     const CUtensorMap* A_tmap,
     const CUtensorMap* B_tmap,
+    const CUtensorMap* C_tmap_ptr,
     __nv_bfloat16* __restrict__ C_ptr,
     int M, int N, int K
 ) {
@@ -412,7 +431,8 @@ extern "C" __global__ __cluster_dims__(CTA_GROUP, 1, 1) __launch_bounds__(THREAD
 void matmul_cluster(
     const __grid_constant__ CUtensorMap A_tmap,
     const __grid_constant__ CUtensorMap B_tmap,
+    const __grid_constant__ CUtensorMap C_tmap,
     __nv_bfloat16* C_ptr, int M, int N, int K)
 {
-    matmul_cluster_impl(&A_tmap, &B_tmap, C_ptr, M, N, K);
+    matmul_cluster_impl(&A_tmap, &B_tmap, &C_tmap, C_ptr, M, N, K);
 }

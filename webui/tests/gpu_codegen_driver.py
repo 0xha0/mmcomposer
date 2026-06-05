@@ -54,10 +54,11 @@ def all_combos(tier_dirs):
     for tdir in tier_dirs:
         key = dir_to_key[tdir]
         tier = mc.TIER_MAP[key]
-        for bm, bn, bk, ns, gsm, nw in itertools.product(
-            mc.BM_OPTS, mc.BN_OPTS, mc.BK_OPTS, mc.NS_OPTS, mc.GSM_OPTS, mc.NW_OPTS
+        for bm, bn, bk, ns, gsm, nw, ts in itertools.product(
+            mc.BM_OPTS, mc.BN_OPTS, mc.BK_OPTS, mc.NS_OPTS, mc.GSM_OPTS, mc.NW_OPTS,
+            mc.TMA_STORE_OPTS
         ):
-            yield tier, dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw)
+            yield tier, dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw, tma_store=ts)
 
 
 def launch_spec(tier, k, M, N, K):
@@ -67,7 +68,7 @@ def launch_spec(tier, k, M, N, K):
     a_slot = k["bm"] * k["bk"] * 2
     b_slot = bn_local * k["bk"] * 2
     slot   = a_slot + b_slot
-    epi    = k["bm"] * (k["bn"] + 8) * 2
+    epi    = k["bm"] * (k["bn"] if k["tma_store"] else k["bn"] + 8) * 2
     shared = max(k["ns"] * slot, epi) + 1024
     block  = (k["nw"] * 32, 1, 1)
     if tier["cluster"]:
@@ -81,14 +82,15 @@ def launch_spec(tier, k, M, N, K):
 
 def tag_for(tier, k):
     return (f"{tier['dir']}_bm{k['bm']}_bn{k['bn']}_bk{k['bk']}"
-            f"_ns{k['ns']}_gsm{k['gsm']}_nw{k['nw']}")
+            f"_ns{k['ns']}_gsm{k['gsm']}_nw{k['nw']}_ts{k['tma_store']}")
 
 
 def render_to_dir(tier, k):
     """Write the substituted kernel.cu; return its path."""
     d = SCRATCH / tag_for(tier, k)
     d.mkdir(parents=True, exist_ok=True)
-    src = mc.render_kernel(tier, k["bm"], k["bn"], k["bk"], k["ns"], k["gsm"], k["nw"])
+    src = mc.render_kernel(tier, k["bm"], k["bn"], k["bk"], k["ns"], k["gsm"], k["nw"],
+                           tma_store=k["tma_store"])
     p = d / "kernel.cu"
     p.write_text(src)
     return p
@@ -134,8 +136,15 @@ def launch_from_cubin(tier, k, arch, shapes, do_bench=True):
             B_tmap = rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=sh["B"].data_ptr(),
                 global_dim=[N, K], global_strides=[N * 2], box_dim=[64, k["bk"]],
                 element_strides=[1, 1], swizzle=rt.TMA_SWIZZLE_128B)
+            # Store-side descriptor (used only when TMA_STORE=1; always passed
+            # since the kernel signature carries C_tmap).  SWIZZLE_NONE matches
+            # the dense SMEM staging.
+            C_tmap = rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=sh["C"].data_ptr(),
+                global_dim=[N, M], global_strides=[N * 2], box_dim=[k["bn"], k["bm"]],
+                element_strides=[1, 1], swizzle=rt.TMA_SWIZZLE_NONE)
             args = [(ctypes.c_byte * 128).from_buffer_copy(A_tmap.tobytes()),
                     (ctypes.c_byte * 128).from_buffer_copy(B_tmap.tobytes()),
+                    (ctypes.c_byte * 128).from_buffer_copy(C_tmap.tobytes()),
                     ctypes.c_void_p(sh["C"].data_ptr()),
                     ctypes.c_int(M), ctypes.c_int(N), ctypes.c_int(K)]
             sh["C"].zero_()
@@ -174,7 +183,7 @@ def build_to_run(tier_dirs, invalid_sample):
     valid, invalid = [], []
     for tier, k in all_combos(tier_dirs):
         warnings = mc.validate_config(k["bm"], k["bn"], k["bk"], k["ns"], k["gsm"], k["nw"],
-                                      cluster=tier["cluster"])
+                                      cluster=tier["cluster"], tma_store=k["tma_store"])
         (valid if not warnings else invalid).append((tier, k))
     stepi = max(1, len(invalid) // max(1, invalid_sample))
     inv_sample = invalid[::stepi][:invalid_sample]
@@ -325,10 +334,10 @@ def main():
     bad = [r for r in ordered if r["validator"] == "valid" and not r["correct"]]
     surprises = [r for r in ordered if r["validator"] == "invalid" and r["correct"]]
     for r in bad:
-        print(f"BAD  {r['tier']:24} bn{r['bn']:>3} ns{r['ns']} gsm{r['gsm']:>2} nw{r['nw']:>2}  "
-              f"{r.get('error') or 'incorrect'}")
+        print(f"BAD  {r['tier']:24} bn{r['bn']:>3} ns{r['ns']} gsm{r['gsm']:>2} nw{r['nw']:>2} "
+              f"ts{r.get('tma_store', 0)}  {r.get('error') or 'incorrect'}")
     for r in surprises:
-        print(f"INVALID-but-WORKS  {r['tier']} bn{r['bn']} ns{r['ns']} gsm{r['gsm']} nw{r['nw']}")
+        print(f"INVALID-but-WORKS  {r['tier']} bn{r['bn']} ns{r['ns']} gsm{r['gsm']} nw{r['nw']} ts{r.get('tma_store',0)}")
 
     # Best (max-TFLOPS) valid combo per tier at the largest shape.
     big = str(shape_list[-1][0])
@@ -368,7 +377,7 @@ def main():
                 "tflops": round(tf, 1) if tf is not None else None,
                 "vs_cublas": round(tf / cublas_tflops[s], 4) if (tf and cublas_tflops.get(s)) else None,
             }
-        entries.append({k: r[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw")}
+        entries.append({k: r[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw", "tma_store")}
                        | {"correct": bool(r["correct"]), "perf": perf})
     matrix = {
         "generated_by": "webui/tests/gpu_codegen_driver.py",

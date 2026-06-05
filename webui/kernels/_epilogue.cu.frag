@@ -4,9 +4,14 @@
     // tier supplies a small contract just before the marker:
     //   cta_rank, off_m_cluster, off_n   — tile-origin primitives
     //       (single-CTA tiers set cta_rank=0, off_m_cluster=off_m)
+    //   C_tmap_ptr                       — const CUtensorMap* for the store
     //   EPI_DEALLOC(taddr, n)            — that tier's tcgen05 dealloc
     //       (single-CTA: tcgen05_dealloc; cluster: tcgen05_dealloc_g2)
-    constexpr int EPI_LD = BN + 8;   // C_sh leading dim (+8 = bank-conflict pad)
+    //
+    // TMA_STORE (0/1) picks Phase 2: a flat int4 store loop, or one async
+    // TMA store per CTA.  The TMA store needs a tightly-packed SMEM source
+    // (no +8 bank-pad), so EPI_LD switches accordingly.
+    constexpr int EPI_LD = TMA_STORE ? BN : (BN + 8);
     auto C_sh = reinterpret_cast<__nv_bfloat16(*)[EPI_LD]>(smem);
 
     tcgen05_fence_after_thread_sync();
@@ -42,28 +47,45 @@
             *reinterpret_cast<int4*>(packed);
     }
 
-    __syncthreads();
-    if (warp_id == 0 && elect_sync()) {
-        EPI_DEALLOC(taddr, BN);
-    }
+    __syncthreads();   // all Phase-1 SMEM writes visible before Phase 2
 
-    // ── Phase 2: SMEM → GMEM, flat thread-major coalesced int4 stores ──
-    // Consecutive lanes write consecutive 16-byte int4 chunks to GMEM
-    // → one coalesced transaction per warp per store.
-    constexpr int CHUNK_BF16        = 8;
-    constexpr int CHUNKS_PER_ROW    = BN / CHUNK_BF16;
-    constexpr int STORES_PER_THREAD = (BM * BN) / (THREADS * CHUNK_BF16);
-    static_assert(STORES_PER_THREAD * THREADS * CHUNK_BF16 == BM * BN,
-                  "BM*BN must be a multiple of THREADS*8 for the flat tile-walk");
     const int out_m_base = off_m_cluster + cta_rank * BM;
 
-    #pragma unroll
-    for (int s = 0; s < STORES_PER_THREAD; s++) {
-        const int flat = tid + s * THREADS;
-        const int row  = flat / CHUNKS_PER_ROW;
-        const int col  = (flat % CHUNKS_PER_ROW) * CHUNK_BF16;
-        const int gr   = out_m_base + row;
-        const int gc   = off_n + col;
-        *reinterpret_cast<int4*>(&C_ptr[gr * N + gc]) =
-            *reinterpret_cast<const int4*>(&C_sh[row][col]);
+    if constexpr (TMA_STORE) {
+        // ── Phase 2a: one async TMA store per CTA ───────────────────
+        // Phase 1 wrote SMEM via the GENERIC proxy (st.shared); the TMA
+        // store engine reads via the ASYNC proxy — fence between them.
+        asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+        if (warp_id == 0 && elect_sync()) {
+            tma_2d_store(C_tmap_ptr,
+                         (uint32_t)__cvta_generic_to_shared(&C_sh[0][0]),
+                         /*x=*/ off_n, /*y=*/ out_m_base);
+            tma_commit_group();
+            tma_wait_group<0>();   // drain before we touch TMEM
+        }
+        // dealloc must come AFTER the store drains — reversing it
+        // deadlocks the bulk-copy engine (bisected in ch13).
+        if (warp_id == 0 && elect_sync()) {
+            EPI_DEALLOC(taddr, BN);
+        }
+    } else {
+        // ── Phase 2b: flat thread-major coalesced int4 stores ───────
+        if (warp_id == 0 && elect_sync()) {
+            EPI_DEALLOC(taddr, BN);
+        }
+        constexpr int CHUNK_BF16        = 8;
+        constexpr int CHUNKS_PER_ROW    = BN / CHUNK_BF16;
+        constexpr int STORES_PER_THREAD = (BM * BN) / (THREADS * CHUNK_BF16);
+        static_assert(STORES_PER_THREAD * THREADS * CHUNK_BF16 == BM * BN,
+                      "BM*BN must be a multiple of THREADS*8 for the flat tile-walk");
+        #pragma unroll
+        for (int s = 0; s < STORES_PER_THREAD; s++) {
+            const int flat = tid + s * THREADS;
+            const int row  = flat / CHUNKS_PER_ROW;
+            const int col  = (flat % CHUNKS_PER_ROW) * CHUNK_BF16;
+            const int gr   = out_m_base + row;
+            const int gc   = off_n + col;
+            *reinterpret_cast<int4*>(&C_ptr[gr * N + gc]) =
+                *reinterpret_cast<const int4*>(&C_sh[row][col]);
+        }
     }
