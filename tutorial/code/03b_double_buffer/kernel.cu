@@ -19,8 +19,12 @@
 //
 // All six tunables (BM, BN, BK, NS, GROUP_SIZE_M, NUM_WARPS) live as
 // constexpr at the top so the MVP web UI can regex-edit them
-// uniformly.  Only (BM=128, NW=4) is verified end-to-end so far —
-// other combinations may need fixes.
+// uniformly.
+//
+// Verified config so far: (BM=128, NW=4).  Empirically NW<4 produces
+// wrong output regardless of (BM, partition strategy) — likely a
+// B200 tcgen05 quirk requiring ≥ 4 warps per CTA.  Pin NW=4 until
+// that's investigated.
 //
 // Toggling those on in the MVP web UI moves the user up to ch07 or
 // ch09 respectively.  This chapter is the "all toggles off" point.
@@ -315,30 +319,32 @@ extern "C" __global__ void matmul_dbuf(
 
     // ── Coalesced 2-phase epilogue (generalized from ch07) ──────────
     //
-    // Phase 1: each warp owns a contiguous *32-row TMEM stripe* per
-    // iteration of the chunk loop and walks all BN cols of it.
-    // tcgen05.ld.32x32b reads 32 rows (one per lane) × 8 cols per
-    // call; we cover BN by stepping n by 8.  ch07 had exactly one
-    // stripe per warp (BM = NUM_WARPS × 32, so the chunk loop didn't
-    // exist).  When BM > NUM_WARPS × 32, each warp processes multiple
-    // stripes, super-chunk-strided so the (warp, chunk) → row_base
-    // mapping is non-overlapping.
+    // Phase 1: each warp processes one or more contiguous 32-row
+    // TMEM stripes via a stride-NUM_WARPS loop over stripe indices.
+    // Lane L within a warp reads TMEM row stripe*32 + L; the inner
+    // n-loop walks all BN cols in 8-col chunks (tcgen05.ld.32x32b.x8).
     //
-    // Constraint: BM % (NUM_WARPS × 32) == 0.
+    // The single constraint is BM % 32 == 0 (32-row chunks divide
+    // evenly).  When BM/32 ≥ NUM_WARPS, every warp processes
+    // (BM/32)/NUM_WARPS stripes (the BM=128/NW=4 case is exactly the
+    // original ch07).  When BM/32 < NUM_WARPS, only the first BM/32
+    // warps enter the loop; the rest skip Phase 1 (they still help
+    // in Phase 2's all-threads flat-walk store).
     //
-    // Examples:
-    //   BM=128, NW=4 → 1 stripe/warp  (warp W rows W·32..(W+1)·32-1)
-    //   BM=128, NW=2 → 2 stripes/warp (interleaved super-chunks)
-    //   BM=256, NW=4 → 2 stripes/warp
+    // Examples (BN=256):
+    //   BM=128, NW=4 → 4 stripes / 4 warps = 1 stripe/warp
+    //   BM=64,  NW=4 → 2 stripes / 4 warps = warps 0,1 active
+    //   BM=128, NW=8 → 4 stripes / 8 warps = warps 0..3 active
     auto C_sh = reinterpret_cast<__nv_bfloat16(*)[BN_PAD]>(smem);
 
     tcgen05_fence_after_thread_sync();
 
-    constexpr int CHUNKS_PER_WARP = BM / (NUM_WARPS * 32);
+    constexpr int NUM_STRIPES = BM / 32;
 
-    #pragma unroll
-    for (int chunk = 0; chunk < CHUNKS_PER_WARP; chunk++) {
-        const int row_base       = (chunk * NUM_WARPS + warp_id) * 32;
+    // Stride-NW round-robin: warp W handles stripes W, W+NW, W+2*NW...
+    // No `#pragma unroll` — trip count depends on runtime `warp_id`.
+    for (int stripe = warp_id; stripe < NUM_STRIPES; stripe += NUM_WARPS) {
+        const int row_base       = stripe * 32;
         const int my_row         = row_base + lane;
         const uint32_t taddr_row = taddr + ((uint32_t)row_base << 16);
 

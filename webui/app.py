@@ -131,9 +131,11 @@ with st.sidebar:
     )
     nw  = st.selectbox(
         "num_warps", [4, 8, 16], index=0,
-        help="Total warps per CTA = threads / 32.  The baseline epilogue "
-             "partitions BM rows across (num_warps × 32) lanes one-row-each, "
-             "so BM must equal num_warps × 32.",
+        help="Total warps per CTA = threads / 32.  Empirically NW<4 produces "
+             "wrong output in the baseline kernel (some `tcgen05.alloc."
+             "cta_group::1` quirk requires ≥4 warps), so NW=2 is dropped "
+             "from the menu.  Phase 1 epilogue uses a stride-NW round-robin "
+             "over 32-row TMEM stripes, so all NW ≥ 4 are structurally OK.",
     )
 
     st.subheader("Optimizations")
@@ -244,23 +246,25 @@ def validate_config(bm, bn, bk, ns, gsm, nw, chapter):
         out.append(
             f"**BN = {bn}** must be a multiple of 64 (the TMA sub-tile width on K-major B)."
         )
-    # Phase 1 epilogue partitioning: each warp owns one or more 32-row
-    # TMEM stripes via the CHUNKS_PER_WARP = BM/(NW*32) outer loop.
-    # Requires BM to be a multiple of NW × 32 so the chunks divide evenly.
-    if bm % (nw * 32) != 0:
+    # Phase 1 epilogue: stride-NW round-robin over 32-row TMEM stripes.
+    # Structural requirement: BM % 32 == 0.
+    if bm % 32 != 0:
         out.append(
-            f"**BM = {bm}** is not a multiple of `num_warps × 32 = {nw * 32}`.  "
-            f"The Phase-1 epilogue partitions BM rows into 32-row stripes "
-            f"distributed across warps, so `BM / (NW × 32)` must be an integer."
+            f"**BM = {bm}** is not a multiple of 32 — the Phase-1 epilogue "
+            "reads TMEM in 32-row chunks (tcgen05.ld.32x32b), so BM must "
+            "divide evenly into them."
         )
-    # Even when BM % (NW*32) == 0 holds, only (BM=128, NW=4) has been
-    # verified end-to-end so far.  Warn for any other compatible combo.
-    elif chapter == "03b_double_buffer" and (bm, nw) != (128, 4):
+    # Empirical: only BM=128 has been verified.  The `make_desc` SBO
+    # (Stride Byte Offset) is hardcoded at 8×128 bytes, which encodes
+    # a layout that's tuned for BM=128; other BM values produce a
+    # mismatched A-descriptor and garbage MMA results.  Fixing requires
+    # the SBO to be derived from BM, which is a separate task.
+    if chapter == "03b_double_buffer" and bm != 128:
         out.append(
-            f"**(BM, NUM_WARPS) = ({bm}, {nw})** is a structurally valid "
-            "combination but has not been verified end-to-end against PyTorch "
-            "in the tutorial repo.  It may compile and run but produce wrong "
-            "results — please test before relying on this config."
+            f"**BM = {bm}**: the baseline kernel's `make_desc` hardcodes "
+            "`SBO = 8 × 128` bytes, which only matches the BM=128 SMEM "
+            "layout.  Other BM values compile but produce wrong MMA results "
+            "(a separate TODO to make SBO BM-dependent)."
         )
     # Phase-2 flat-walk needs BM*BN divisible by THREADS*8.
     if (bm * bn) % (nw * 32 * 8) != 0:
