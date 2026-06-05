@@ -21,10 +21,18 @@
 // constexpr at the top so the MVP web UI can regex-edit them
 // uniformly.
 //
-// Verified config so far: (BM=128, NW=4).  Empirically NW<4 produces
-// wrong output regardless of (BM, partition strategy) — likely a
-// B200 tcgen05 quirk requiring ≥ 4 warps per CTA.  Pin NW=4 until
-// that's investigated.
+// BM is fixed at 128 for this single-CTA kernel, and that's a
+// hardware floor, not a missing feature:
+//   * tcgen05.mma.kind::f16 (cta_group::1) has an M-atom of 128 — one
+//     MMA always computes 128 rows.  BM=64 makes it read past the
+//     64-row A tile in SMEM → CUDA_ERROR_ILLEGAL_ADDRESS.
+//   * TMEM is 128 lanes, so the accumulator can hold at most M=128
+//     single-CTA.  BM=256 doesn't fit — that's what the 2-CTA cluster
+//     tier (ch08/ch09) is for (each CTA holds 128 of the 256 rows).
+// So BM=128 is THE single-CTA value.  Larger M → 2-CTA toggle.
+//
+// NW is pinned at 4: empirically NW<4 also produces wrong output
+// (a separate ≥4-warp tcgen05 quirk we haven't traced).  NW ≥ 4 OK.
 //
 // Toggling those on in the MVP web UI moves the user up to ch07 or
 // ch09 respectively.  This chapter is the "all toggles off" point.
@@ -86,12 +94,12 @@ __device__ __forceinline__ uint64_t make_desc(uint32_t smem_addr) {
     constexpr uint64_t SBO = 8 * 128;
     uint64_t a = ((uint64_t)smem_addr >> 4) & 0x3FFFULL;
     uint64_t b = ((SBO)              >> 4) & 0x3FFFULL;
-    // NOTE: this descriptor encoding is verified at BM=128 only.  BM=64
-    // and BM=256 produce wrong MMA output — bit 46 (matrix base offset)
-    // is NOT the culprit (tried 0 and 1, both give the same result).
-    // The actual BM-dependent piece is somewhere we haven't isolated
-    // (likely related to how the MMA hardware walks the SMEM A tile at
-    // different M-extents with SWIZZLE_128B).
+    // NOTE: this descriptor is correct for BM=128, the only single-CTA
+    // value that works (see the BM=128 invariant at the top of file).
+    // BM was never the SBO's fault — the SBO/bit-46 are layout-correct
+    // for any BM.  The real blocker is the MMA M-atom + TMEM lanes:
+    // tcgen05.mma.kind::f16 single-CTA computes M=128, and BM=64 makes
+    // it read past the 64-row A tile (CUDA_ERROR_ILLEGAL_ADDRESS).
     return a | (b << 32) | (1ULL << 46) | (2ULL << 61);
 }
 

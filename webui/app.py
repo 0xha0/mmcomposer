@@ -99,11 +99,12 @@ with st.sidebar:
     st.subheader("Tile shape")
     bm  = st.selectbox(
         "BM", [128], index=0,
-        help="M-dimension tile size per CTA.  Currently locked at 128: the "
-             "`make_desc` / TMA-descriptor encoding for SWIZZLE_128B has a "
-             "BM-dependent piece we haven't fully traced, so BM != 128 "
-             "produces wrong MMA output.  The dropdown is single-valued "
-             "until that's fixed; other knobs (NS, GSM, shapes) still vary.",
+        help="M-dimension tile size per CTA.  Fixed at 128 for the "
+             "single-CTA baseline — this is a hardware floor, not a TODO: "
+             "tcgen05.mma.kind::f16 has an M-atom of 128 (BM=64 reads past "
+             "the A tile → illegal address), and TMEM has 128 lanes (BM=256 "
+             "won't fit).  Larger M needs the 2-CTA cluster tier (toggle "
+             "below), where each CTA holds 128 of the 256 rows.",
     )
     bn  = st.selectbox(
         "BN", [64, 128, 256, 512], index=2,
@@ -256,17 +257,16 @@ def validate_config(bm, bn, bk, ns, gsm, nw, chapter):
             "reads TMEM in 32-row chunks (tcgen05.ld.32x32b), so BM must "
             "divide evenly into them."
         )
-    # Empirical: only BM=128 has been verified.  The `make_desc` SBO
-    # (Stride Byte Offset) is hardcoded at 8×128 bytes, which encodes
-    # a layout that's tuned for BM=128; other BM values produce a
-    # mismatched A-descriptor and garbage MMA results.  Fixing requires
-    # the SBO to be derived from BM, which is a separate task.
+    # BM=128 is a hardware floor for the single-CTA kernel, not a TODO:
+    # the tcgen05.mma.kind::f16 M-atom is 128 (BM<128 reads past the A
+    # tile → illegal address) and TMEM is 128 lanes (BM>128 won't fit).
     if chapter == "03b_double_buffer" and bm != 128:
         out.append(
-            f"**BM = {bm}**: the baseline kernel's `make_desc` hardcodes "
-            "`SBO = 8 × 128` bytes, which only matches the BM=128 SMEM "
-            "layout.  Other BM values compile but produce wrong MMA results "
-            "(a separate TODO to make SBO BM-dependent)."
+            f"**BM = {bm}**: the single-CTA baseline only supports BM=128.  "
+            "tcgen05.mma.kind::f16 computes M=128 per instruction (BM<128 "
+            "reads past the A tile → illegal address), and TMEM holds 128 "
+            "lanes (BM>128 won't fit single-CTA).  Larger M requires the "
+            "2-CTA cluster tier."
         )
     # Phase-2 flat-walk needs BM*BN divisible by THREADS*8.
     if (bm * bn) % (nw * 32 * 8) != 0:
