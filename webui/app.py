@@ -84,7 +84,9 @@ with st.sidebar:
     dtype = st.selectbox("Data type", mc.DTYPE_OPTS,
                          help="Input dtype for A and B.  C is fp32 accumulator → output dtype.")
 
-    st.subheader("Tile shape")
+    st.subheader("Options")
+    st.caption("Composable knobs on one kernel — tile sizes *and* on/off toggles.  "
+               "No knob is guaranteed to help; the measured TFLOPS tell you what actually does.")
     bm = st.selectbox("BM", mc.BM_OPTS, index=0,
                       help="M tile per CTA.  Locked at 128: tcgen05.mma.kind::f16 M-atom is 128 and "
                            "TMEM holds 128 lanes.  Larger M is served by the 2-CTA cluster tier.")
@@ -104,7 +106,6 @@ with st.sidebar:
                       help="Warps per CTA.  The epilogue splits warps as a 2D grid: BM/32 row strips × "
                            "NW/(BM/32) column groups, so NW must be a multiple of BM/32 (= 4 at BM=128).")
 
-    st.subheader("Optimizations")
     ms_ws = st.toggle("Multi-staging + warp specialization", value=False,
                       help="Dedicated TMA + MMA warps (async producer/consumer) on top of the "
                            "multi-stage ring.  Off = synchronous-MMA baseline (Tier 1).")
