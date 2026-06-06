@@ -91,11 +91,13 @@ with st.sidebar:
                                "A universal toggle across tiers — often *not* a win (see the measured "
                                "TFLOPS), kept as an honest mechanism comparison.")
 
-    st.subheader("Problem shapes")
+    st.subheader("Problem shape")
     shapes_text = st.text_area(
-        "Target shapes (one M,N,K per line)",
-        value="4096,4096,4096\n8192,8192,8192", height=80,
-        help="Shapes to benchmark.  Only shapes with a cached number show TFLOPS; others show —.")
+        "Target shape (one M,N,K)",
+        value="8192,8192,8192", height=68,
+        help="The single (M, N, K) you're tuning for.  One shape at a time: different shapes "
+             "have different optimal knob configs, so a kernel is composed/verified per shape.  "
+             "Extra lines are ignored (with a warning).")
 
     st.divider()
     generate = st.button("🛠  Generate kernel", type="primary", width="stretch")
@@ -118,6 +120,17 @@ ns, gsm, nw = cfg["ns"], cfg["gsm"], cfg["nw"]
 ms_ws, two_cta = cfg["ms_ws"], cfg["two_cta"]
 tma_store = cfg["tma_store"]
 shapes_text = cfg["shapes_text"]
+
+# One shape at a time: different shapes have different optimal configs.
+all_shapes = mc.parse_shapes(shapes_text)
+if len(all_shapes) > 1:
+    st.warning(
+        f"⚠️ Only one target shape is supported at a time — you entered {len(all_shapes)}.  "
+        "Different shapes have different optimal knob configs, so mmcomposer composes/verifies a "
+        f"kernel per shape.  Using the first (**{all_shapes[0][0]}×{all_shapes[0][1]}×{all_shapes[0][2]}**); "
+        "the rest are ignored."
+    )
+shapes = all_shapes[:1]
 
 
 # ── Resolve tier ──────────────────────────────────────────────────────
@@ -194,7 +207,7 @@ with tab_bench:
     st.caption(f"Numbers are **measured on a real B200** ({cm.get('arch', 'sm_100a')}) for this exact "
                f"config, recorded at {swept} via `do_bench`.  Download the kernel + host to reproduce.")
     rows = []
-    for (m, n, k) in mc.parse_shapes(shapes_text):
+    for (m, n, k) in shapes:
         square = (m == n == k)
         try:
             p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m, tma_store=tma_store) if square else None
