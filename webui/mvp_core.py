@@ -40,9 +40,15 @@ COMPAT_JSON = KERNELS_DIR / "compat_matrix.json"
 # single CTA).  Larger M is handled by the 2-CTA cluster tier, where each
 # CTA still holds 128 of the rows — so BM stays 128 there too.
 BM_OPTS  = [128]
-# BN caps at 256: the tcgen05.mma N-atom max is 256 columns per MMA, and
-# the 2-CTA cluster splits M (not N), so BN=512 throws ILLEGAL_INSTRUCTION
-# in every tier (empirically confirmed by the B200 codegen test).
+# BN caps at 256.  The tcgen05.mma N-atom max is 256 columns per MMA, so a
+# single MMA can't do BN=512 (empirically: ILLEGAL_INSTRUCTION).  BN=512 is
+# *technically* doable with two N=256 MMAs per K-step, but we considered it
+# and decided against it — both ways of tiling negate large-BN's main
+# benefit (amortizing A reuse across N):
+#   * outer 2-pass over the K-loop re-loads A each pass → no amortization;
+#   * inner N-tile doubles B SMEM → NS drops 7→4 (cluster) → loses pipelining.
+# So BN=512 is unlikely to beat BN=256, for non-trivial kernel surgery.
+# Revisit only if a restructuring shares A across the N passes.
 BN_OPTS  = [64, 128, 256]
 # BK is locked to 64: the K-major B TMA descriptor uses SWIZZLE_128B, whose
 # inner box is exactly one 128 B atom = 64 BF16 elements.  Other values
