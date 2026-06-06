@@ -26,6 +26,7 @@ import streamlit as st
 # Make `mvp_core` importable whether launched via `streamlit run` (which
 # adds the script dir to sys.path) or via AppTest / other harnesses.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import streamlit.components.v1 as components
 import mvp_core as mc
 
 
@@ -42,6 +43,32 @@ st.title("mmcomposer")
 st.markdown(
     "*MVP: pick optimization toggles and tile parameters; we render a "
     "kernel from the codebase plus a self-contained host script to launch it.*"
+)
+
+# ── Generate button (main area, top — no scrolling) + keyboard shortcut ──
+generate = st.button("🛠  Generate kernel", type="primary", width="stretch")
+st.caption("Tip: press **Ctrl/Cmd + Enter** to (re)generate — no mouse needed.")
+
+# Bind Ctrl/Cmd+Enter to click the Generate button.  Streamlit has no native
+# button hotkey, so we attach a one-time keydown listener on the parent doc
+# (the component runs in a same-origin iframe).  height=0 keeps it invisible.
+components.html(
+    """
+    <script>
+    const doc = window.parent.document;
+    if (!doc.__mmcomposerGenBound) {
+        doc.__mmcomposerGenBound = true;
+        doc.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                const btn = [...doc.querySelectorAll('button')]
+                    .find(b => b.innerText.trim().includes('Generate kernel'));
+                if (btn) { e.preventDefault(); btn.click(); }
+            }
+        });
+    }
+    </script>
+    """,
+    height=0,
 )
 st.divider()
 
@@ -98,9 +125,6 @@ with st.sidebar:
         help="The single (M, N, K) you're tuning for.  One shape at a time: different shapes "
              "have different optimal knob configs, so a kernel is composed/verified per shape.  "
              "Extra lines are ignored (with a warning).")
-
-    st.divider()
-    generate = st.button("🛠  Generate kernel", type="primary", width="stretch")
 
 
 # ── Gate on Generate; snapshot config into session_state ──────────────
