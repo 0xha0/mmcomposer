@@ -48,7 +48,6 @@ st.markdown(
 # ── Generate button (main area, top — no scrolling) ──
 generate = st.button("🛠  Generate kernel", type="primary", width="stretch")
 st.caption("Tip: press **Ctrl/Cmd + Enter** to (re)generate — no mouse needed.")
-st.divider()
 
 
 # ── Sidebar: controls ─────────────────────────────────────────────────
