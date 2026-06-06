@@ -1,18 +1,3 @@
-// Runnable companion for Chapter 09 — CTA swizzling (chunked grid walk).
-//
-// Identical to ch08 (2-CTA cluster + multi-stage + warp-spec) except
-// for the (cluster_m, cluster_n) derivation at the top of the
-// kernel.  Instead of the natural N-fast-within-M-row walk, we
-// re-order the grid into chunks of GROUP_SIZE_M cluster-rows in M,
-// walking M fast within each chunk and N slow.  GSM consecutive CTAs
-// then share the same B-stripe → better L2 reuse on B.  Everything
-// else — the warp-spec TMA/MMA, the multi-stage ring, the cluster
-// MMA, the epilogue, the SMEM sizing — is bit-identical to ch08.
-//
-// Both NS and GROUP_SIZE_M are template parameters; main.py picks one
-// (NS, GSM) instantiation per launcher.  See README for the perf
-// sweep and rationale.
-
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cstdint>

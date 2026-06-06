@@ -1,20 +1,3 @@
-// Runnable companion for Chapter 07 — coalesced SMEM-staged epilogue.
-//
-// Identical to chapter 06 (K-major B, multi-stage, multi-CTA, warp-
-// specialized) through the K-loop.  The only thing that changes is
-// the epilogue: instead of writing TMEM directly to GMEM in the
-// natural per-thread layout (which scatters 32 stores per warp across
-// 32 cache lines), we split into two phases:
-//
-//   phase 1:  TMEM → SMEM   in the natural "lane L owns row L" layout
-//             (with the BN+8 padding to avoid bank conflicts).
-//   phase 2:  SMEM → GMEM   re-indexed flat thread-major so
-//             consecutive lanes hit consecutive 16-byte chunks
-//             → one coalesced 512-byte GMEM transaction per warp.
-//
-// The SMEM ring used by the multi-stage A/B tiles is reused as the
-// staging buffer — no extra SMEM allocation needed.
-
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cstdint>
