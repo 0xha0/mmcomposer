@@ -255,30 +255,32 @@ def _strip_module_docstring(src: str) -> str:
     return src[end + 3:].lstrip("\n")
 
 
-EPI_MARKER = "// @@EPILOGUE@@"
+# Shared building-block fragments stitched into each kernel at a marker.
+# (The epilogue and the MMA-issue chain live in one place and are spliced
+# into every tier — the start of the composable-fragments architecture.)
+FRAGMENTS = {
+    "// @@EPILOGUE@@":  "_epilogue.cu.frag",
+    "// @@MMA_CHAIN@@": "_mma_chain.cu.frag",
+}
 
 
-def _splice_epilogue(src: str) -> str:
-    """Replace the `// @@EPILOGUE@@` marker line with the shared epilogue
-    fragment, so all tiers share one epilogue source."""
-    if EPI_MARKER not in src:
-        return src
-    frag = (KERNELS_DIR / "_epilogue.cu.frag").read_text()
-    if not frag.endswith("\n"):
-        frag += "\n"
+def _splice_fragments(src: str) -> str:
+    """Replace each building-block marker line with its fragment."""
     out = []
     for line in src.splitlines(keepends=True):
-        if line.strip() == EPI_MARKER:
-            out.append(frag)
+        marker = line.strip()
+        if marker in FRAGMENTS:
+            frag = (KERNELS_DIR / FRAGMENTS[marker]).read_text()
+            out.append(frag if frag.endswith("\n") else frag + "\n")
         else:
             out.append(line)
     return "".join(out)
 
 
 def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0) -> str:
-    """Return the substituted, epilogue-stitched kernel.cu for a tier."""
+    """Return the substituted, fragment-stitched kernel.cu for a tier."""
     src = (KERNELS_DIR / tier["dir"] / "kernel.cu").read_text()
-    src = _splice_epilogue(src)
+    src = _splice_fragments(src)
     return substitute_kernel_constexprs(src, **knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store))
 
 

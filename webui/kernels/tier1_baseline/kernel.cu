@@ -164,6 +164,12 @@ __device__ __forceinline__ void tma_wait_group() {
     asm volatile("cp.async.bulk.wait_group.read %0;" :: "n"(N) : "memory");
 }
 
+// MMA-issue building block (shared fragment).  MMA_ISSUE picks the
+// single-CTA g1 instruction; the cluster tier supplies the g2 variant.
+#define MMA_ISSUE(t, a, b, i, e) tcgen05_mma((t), (a), (b), (i), (e))
+// @@MMA_CHAIN@@
+#undef MMA_ISSUE
+
 extern "C" __global__ void matmul_dbuf(
     const __grid_constant__ CUtensorMap A_tmap_,
     const __grid_constant__ CUtensorMap B_tmap_,
@@ -273,16 +279,7 @@ extern "C" __global__ void matmul_dbuf(
             tile_ready_phase[slot] ^= 1;
             tcgen05_fence_after_thread_sync();
 
-            #pragma unroll
-            for (int kk = 0; kk < K_MMAS; kk++) {
-                const uint64_t a_desc = make_desc(
-                    A_base(slot) + kk * MMA_K * BF16_BYTES);
-                const uint64_t b_desc = make_desc_K_major(
-                    B_base(slot) + kk * MMA_K * SWIZZLE_ROW_BYTES,
-                    BK * SWIZZLE_ROW_BYTES);
-                const bool first_ever = (k == 0) && (kk == 0);
-                tcgen05_mma(taddr, a_desc, b_desc, idesc, !first_ever);
-            }
+            issue_mma_chain(taddr, A_base(slot), B_base(slot), idesc, /*first_k_tile=*/ (k == 0));
             tcgen05_commit(done_mb);
 
             // Prefetch (k + NS)-th tile into the freed slot.
