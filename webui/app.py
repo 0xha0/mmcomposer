@@ -106,18 +106,21 @@ with st.sidebar:
                       help="Warps per CTA.  The epilogue splits warps as a 2D grid: BM/32 row strips × "
                            "NW/(BM/32) column groups, so NW must be a multiple of BM/32 (= 4 at BM=128).")
 
-    ms_ws = st.toggle("Multi-staging + warp specialization", value=False,
-                      help="Dedicated TMA + MMA warps (async producer/consumer) on top of the "
-                           "multi-stage ring.  Off = synchronous-MMA baseline (Tier 1).")
-    two_cta = st.toggle("2-CTA cluster MMA", value=False,
-                        help="`__cluster_dims__(2,1,1)` + `cta_group::2`: two CTAs cooperate in one "
-                             "tcgen05.mma (half-B per CTA, doubles M per MMA).  Requires warp "
-                             "specialization (toggle above).")
-    tma_store = st.toggle("TMA store epilogue", value=False,
-                          help="Epilogue Phase 2: write the result to GMEM with one async TMA store "
-                               "per CTA (swizzled SMEM staging) instead of all-thread int4 stores.  "
-                               "A universal toggle across tiers — often *not* a win (see the measured "
-                               "TFLOPS), kept as an honest mechanism comparison.")
+    ms_ws = st.selectbox(
+        "Multi-staging + warp specialization", mc.ONOFF_OPTS, index=0,
+        help="Dedicated TMA + MMA warps (async producer/consumer) on top of the "
+             "multi-stage ring.  Off = synchronous-MMA baseline (Tier 1).") == "On"
+    two_cta = st.selectbox(
+        "2-CTA cluster MMA", mc.ONOFF_OPTS, index=0,
+        help="`__cluster_dims__(2,1,1)` + `cta_group::2`: two CTAs cooperate in one "
+             "tcgen05.mma (half-B per CTA, doubles M per MMA).  Requires "
+             "multi-staging + warp specialization (above).") == "On"
+    tma_store = st.selectbox(
+        "TMA store epilogue", mc.ONOFF_OPTS, index=0,
+        help="Epilogue Phase 2: write the result to GMEM with one async TMA store "
+             "per CTA (swizzled SMEM staging) instead of all-thread int4 stores.  "
+             "A universal knob across tiers — often *not* a win (see the measured "
+             "TFLOPS), kept as an honest mechanism comparison.") == "On"
 
     st.subheader("Problem shape")
     shapes_text = st.text_area(

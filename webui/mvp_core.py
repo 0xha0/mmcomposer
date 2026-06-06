@@ -54,6 +54,9 @@ NW_OPTS  = [4, 8, 16]
 # Epilogue Phase-2 store path: 0 = all-thread int4 stores; 1 = one async
 # TMA store per CTA (swizzled SMEM staging).  A universal toggle.
 TMA_STORE_OPTS = [0, 1]
+# On/off knobs are presented as dropdowns too, for a uniform UI (and to
+# leave room for an "Auto" value once auto-tuning lands).
+ONOFF_OPTS = ["Off", "On"]
 
 GPU_OPTS   = ["B200 (sm_100a)", "H100 (sm_90a) — coming soon", "RTX 50xx (sm_120) — coming soon"]
 DTYPE_OPTS = ["bfloat16", "float16 — coming soon", "fp8 e4m3 — coming soon"]
