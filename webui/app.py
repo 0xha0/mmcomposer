@@ -101,7 +101,7 @@ with st.sidebar:
                + _rec_note)
     bm = st.selectbox("BM", mc.BM_OPTS, index=_idx(mc.BM_OPTS, "bm", 0),
                       help="M tile per CTA.  Locked at 128: tcgen05.mma.kind::f16 M-atom is 128 and "
-                           "TMEM holds 128 lanes.  Larger M is served by the 2-CTA cluster tier.")
+                           "TMEM holds 128 lanes.  Larger M is served by turning on 2-CTA cluster MMA.")
     bn = st.selectbox("BN", mc.BN_OPTS, index=_idx(mc.BN_OPTS, "bn", 2),
                       help="N tile per CTA.  Multiple of 64 (K-major B TMA sub-tile).  Caps at 256: "
                            "the tcgen05.mma N-atom max is 256, and the cluster splits M, not N.")
@@ -113,7 +113,7 @@ with st.sidebar:
                            "capped by SMEM: NS × slot ≤ 228 KB/CTA.")
     gsm = st.selectbox("CTA swizzle factor (GROUP_SIZE_M)", mc.GSM_OPTS, index=_idx(mc.GSM_OPTS, "gsm", 3),
                        help="Chunked block-id walk for L2 reuse on B.  GSM=1 disables swizzle.  "
-                            "A universal tunable — every tier supports it.")
+                            "A universal tunable — works with any option combination.")
     nw = st.selectbox("num_warps", mc.NW_OPTS, index=_idx(mc.NW_OPTS, "nw", 0),
                       help="Warps per CTA.  The epilogue splits warps as a 2D grid: BM/32 row strips × "
                            "NW/(BM/32) column groups, so NW must be a multiple of BM/32 (= 4 at BM=128).")
@@ -131,7 +131,7 @@ with st.sidebar:
         "TMA store epilogue", mc.ONOFF_OPTS, index=_onoff("tma_store"),
         help="Epilogue Phase 2: write the result to GMEM with one async TMA store "
              "per CTA (swizzled SMEM staging) instead of all-thread int4 stores.  "
-             "A universal knob across tiers — often *not* a win (see the measured "
+             "A universal knob — often *not* a win (see the measured "
              "TFLOPS), kept as an honest mechanism comparison.") == "On"
 
     st.subheader("Problem shape")
@@ -173,16 +173,15 @@ if len(all_shapes) > 1:
 shapes = all_shapes[:1]
 
 
-# ── Resolve tier ──────────────────────────────────────────────────────
+# ── Resolve the implementation for the chosen options ─────────────────
+# (Internally these map to one of a few kernel shapes, but there's no
+# user-facing "tier" ladder — you just compose options freely.)
 
 tier = mc.tier_for(ms_ws, two_cta)
 if tier is None:
     st.error("**2-CTA cluster MMA** requires **Multi-staging + warp specialization** to be on.  "
              "(Cluster MMA only fits in the warp-specialized kernel.)")
     st.stop()
-
-st.markdown(f"### {tier['label']}")
-st.caption(tier["desc"])
 
 # Load the empirical compat matrix once, up front, so it's always defined
 # (the Benchmark tab reads `cm` even when the config is invalid).  It's an
@@ -202,7 +201,7 @@ if warnings:
     for w in warnings:
         st.warning(w)
 else:
-    st.success("✅ Configuration passes all static constraint checks for the selected tier.")
+    st.success("✅ Configuration passes all static constraint checks.")
     # Empirical ground truth from the committed B200 compatibility matrix.
     try:
         status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw, tma_store=tma_store)
