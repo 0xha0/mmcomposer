@@ -23,8 +23,11 @@ import mvp_core as mc
 HERE = pathlib.Path(__file__).resolve().parent
 SCRATCH = HERE / "tests" / "_scratch" / "live"
 WORKER = HERE / "_live_bench_worker.py"
+DRIVER = HERE / "tests" / "gpu_codegen_driver.py"
 
 DEFAULT_SRUN_ARGS = "--partition=dedicated --gres=gpu:nvidia_b200:1 --time=00:10:00"
+# Autotune sweeps many combos, so it needs a longer allocation window.
+DEFAULT_AUTOTUNE_SRUN_ARGS = "--partition=dedicated --gres=gpu:nvidia_b200:1 --time=01:00:00"
 
 
 def live_available() -> bool:
@@ -84,3 +87,56 @@ def run_live_bench(tier, knobs: dict, M: int, N: int, K: int, timeout: int = 900
                     "stderr": proc.stderr[-800:]}
     return {"ok": False, "error": "worker produced no result (compile/launch failed?)",
             "stderr": (proc.stderr or proc.stdout)[-800:]}
+
+
+def run_autotune(tier_dirs, M: int, N: int, K: int, timeout: int = 3000) -> dict:
+    """Live sweep: srun the gpu_codegen_driver over every valid combo for the
+    given tiers at one (M,N,K), then return the ranked results.
+
+    Reuses the offline driver (parallel compile + fault-isolated run + cuBLAS),
+    but writes to a TEMP matrix so the committed one is never touched.  Returns
+    {ok, cublas_tflops, results:[{tier,bm..,tflops,vs_cublas,rel_err} sorted],
+    n_combos, error}.
+    """
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    tag = hashlib.sha1((",".join(tier_dirs) + f"|{M}x{N}x{K}").encode()).hexdigest()[:16]
+    out_matrix = SCRATCH / f"autotune_{tag}.json"
+    if out_matrix.exists():
+        out_matrix.unlink()
+
+    py = os.environ.get("MMCOMPOSER_PY", sys.executable)
+    srun_args = shlex.split(os.environ.get("MMCOMPOSER_AUTOTUNE_SRUN_ARGS", DEFAULT_AUTOTUNE_SRUN_ARGS))
+    cmd = ["srun", *srun_args, py, str(DRIVER),
+           "--perf-shapes", f"{M}x{N}x{K}",
+           "--tiers", ",".join(tier_dirs),
+           "--invalid-sample", "0",          # autotune wants valid combos only
+           "--compat-out", str(out_matrix)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"autotune sweep timed out after {timeout}s"}
+
+    if not out_matrix.exists():
+        return {"ok": False, "error": "sweep produced no matrix (driver failed?)",
+                "stderr": (proc.stderr or proc.stdout)[-1200:]}
+    try:
+        matrix = json.loads(out_matrix.read_text())
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"could not parse sweep output: {e}"}
+
+    key = mc.shape_key(M, N, K)
+    cub = (matrix.get("cublas_tflops") or {}).get(key)
+    results = []
+    for e in matrix.get("entries", []):
+        if not e.get("correct"):
+            continue
+        p = (e.get("perf") or {}).get(key)
+        if p and p.get("tflops"):
+            results.append({**{k: e[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm",
+                                                 "nw", "tma_store", "persistent")},
+                            "tflops": p["tflops"], "vs_cublas": p.get("vs_cublas"),
+                            "rel_err": p.get("rel_err")})
+    results.sort(key=lambda r: r["tflops"], reverse=True)
+    return {"ok": bool(results), "cublas_tflops": cub, "results": results,
+            "n_combos": len(results),
+            "error": None if results else "no correct combos measured for this shape"}
