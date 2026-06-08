@@ -231,7 +231,7 @@ def ssh_copy_button(name, content, label):
         .mmc-btn:hover {{ border-color: #ff4b4b; color: #ff4b4b; }}
         .mmc-btn:active {{ background-color: #ff4b4b; color: #ffffff; border-color: #ff4b4b; }}
         .mmc-msg {{ font-family: "Source Sans Pro", sans-serif; font-size: 0.8rem;
-                    color: #09ab3b; margin-top: 0.35rem; }}
+                    color: #09ab3b; margin-top: 0.35rem; text-align: center; }}
         @media (prefers-color-scheme: dark) {{
           .mmc-btn {{ background-color: rgb(19,23,32); color: rgb(250,250,250);
                       border-color: rgba(250,250,250,0.2); }}
