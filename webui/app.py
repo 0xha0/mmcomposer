@@ -213,21 +213,30 @@ def ssh_snippet(name, content, label):
     SSH terminal sidesteps that entirely — no URL, no auth.  The quoted
     delimiter prevents the shell from expanding anything in the source."""
     body = content if content.endswith("\n") else content + "\n"   # delimiter on its own line, no extra blank
-    with st.expander(f"📋 On a remote/SSH host: copy-paste to recreate {label}"):
-        st.caption("Click the copy icon, paste into your terminal, press Enter.")
+    with st.expander("📋 Copy-paste for SSH"):
+        st.caption(f"Recreate {label} on a remote host — click the copy icon, "
+                   "paste into your terminal, press Enter.")
         st.code(f"cat > {name} <<'MMCOMPOSER_EOF'\n{body}MMCOMPOSER_EOF", language="bash")
 
 
 tab_kernel, tab_host, tab_bench = st.tabs(["Kernel code", "Host code (self-contained)", "Benchmark (measured on B200)"])
 
 with tab_kernel:
-    st.download_button("⬇ Download kernel.cu", data=kernel_src, file_name="kernel.cu", mime="text/x-c")
-    ssh_snippet("kernel.cu", kernel_src, "kernel.cu")
+    dc, sc = st.columns([1, 2])
+    with dc:
+        st.download_button("⬇ Download kernel.cu", data=kernel_src, file_name="kernel.cu",
+                           mime="text/x-c", width="stretch")
+    with sc:
+        ssh_snippet("kernel.cu", kernel_src, "kernel.cu")
     st.code(kernel_src, language="cpp", line_numbers=True)
 
 with tab_host:
-    st.download_button("⬇ Download host.py", data=host_src, file_name="host.py", mime="text/x-python")
-    ssh_snippet("host.py", host_src, "host.py")
+    dc, sc = st.columns([1, 2])
+    with dc:
+        st.download_button("⬇ Download host.py", data=host_src, file_name="host.py",
+                           mime="text/x-python", width="stretch")
+    with sc:
+        ssh_snippet("host.py", host_src, "host.py")
     st.code(host_src, language="python", line_numbers=True)
 
 with tab_bench:
