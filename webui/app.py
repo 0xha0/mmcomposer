@@ -332,6 +332,50 @@ with tab_bench:
             st.info("Click **Benchmark this config on a B200 (live)** to measure this exact shape.")
         st.divider()
 
+        # ── Autotune: live sweep of every valid combo, ranked ────────────
+        DIR_LABEL = {t["dir"]: t["label"] for t in mc.TIER_MAP.values() if t}
+        ALL_TIER_DIRS = list(DIR_LABEL.keys())
+        st.markdown("**🔧 Autotune** — sweep *every valid combo* on a B200 for this shape and rank by TFLOPS.")
+        scope = st.radio("Sweep scope", ["Selected approach only", "All tiers (full, slower)"],
+                         horizontal=True, key="autotune_scope",
+                         help="Selected = sweep knobs for your current tier; All = also sweep the other tiers.")
+        at_dirs = [tier["dir"]] if scope.startswith("Selected") else ALL_TIER_DIRS
+        at_sig = (tuple(at_dirs), m0, n0, k0)
+        at_cache = st.session_state.setdefault("autotune_cache", {})
+        if st.button("🔧  Autotune: sweep valid combos on a B200", key="autotune_btn"):
+            with st.spinner(f"Sweeping all valid combos for {m0}×{n0}×{k0} on a B200 "
+                            "(compiles + runs each + cuBLAS — this takes minutes)…"):
+                at_cache[at_sig] = live_bench.run_autotune(at_dirs, m0, n0, k0)
+        at = at_cache.get(at_sig)
+        if at and at.get("ok"):
+            b = at["results"][0]
+            st.success(
+                f"🏆 **Best of {at['n_combos']} valid combos** at {m0}×{n0}×{k0}: "
+                f"**{b['tflops']:.0f} TFLOPS** ({b['vs_cublas']:.0%} of cuBLAS "
+                f"{at['cublas_tflops']:.0f}) — {DIR_LABEL.get(b['tier'], b['tier']).split('—')[0].strip()} · "
+                f"BN={b['bn']} NS={b['ns']} GSM={b['gsm']} NW={b['nw']} "
+                f"TMA_STORE={b['tma_store']} PERSISTENT={b['persistent']}")
+            n_res = len(at["results"])
+            top_n = st.slider("Show top", min_value=3, max_value=min(50, n_res),
+                              value=min(10, n_res), key="autotune_topn") if n_res > 3 else n_res
+            st.dataframe([{
+                "#": i + 1,
+                "Tier": DIR_LABEL.get(r["tier"], r["tier"]).split("—")[0].replace("Tier", "T").strip(),
+                "BN": r["bn"], "NS": r["ns"], "GSM": r["gsm"], "NW": r["nw"],
+                "TMA": r["tma_store"], "PERS": r["persistent"],
+                "TFLOPS": f"{r['tflops']:.0f}",
+                "vs cuBLAS": f"{r['vs_cublas']:.0%}" if r.get("vs_cublas") else "—",
+            } for i, r in enumerate(at["results"][:top_n])], width="stretch", hide_index=True)
+            st.caption("Set the sidebar to the winning knobs (and re-generate) to download that kernel.")
+        elif at:
+            st.error(f"Autotune failed: {at.get('error')}")
+            if at.get("stderr"):
+                st.code(at["stderr"], language="text")
+        else:
+            st.caption("Autotune submits one srun that compiles + benchmarks every valid combo — "
+                       "tens to hundreds of kernels. Selected-approach is faster; All-tiers is the full search.")
+        st.divider()
+
     try:
         pshapes = mc.perf_shapes()
     except Exception:
