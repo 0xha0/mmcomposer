@@ -66,6 +66,14 @@ TMA_STORE_OPTS = [0, 1]
 # win).  Tried on the Tier 3 cluster but measured a wash (cluster-barrier
 # overhead cancels the gain), so it stays off there.
 PERSISTENT_OPTS = [0, 1]
+# Output-store L1 cache hint: 1 = `.L1::no_allocate` on the int4 epilogue
+# store (C is write-once, so don't evict A/B from L1).  Measured perf-neutral
+# on B200 (the reuse that matters is L2, which the L1 hint doesn't touch), but
+# correct and never-negative — kept as a free composable knob.  Only affects
+# the int4 store path (TMA_STORE=0); a no-op under the TMA-store epilogue.
+# Perf-neutral, so it is NOT a compat-matrix dimension (a no_allocate=1 config
+# shares the swept no_allocate=0 entry).
+NO_ALLOCATE_OPTS = [0, 1]
 # On/off knobs are presented as dropdowns too, for a uniform UI (and to
 # leave room for an "Auto" value once auto-tuning lands).
 ONOFF_OPTS = ["Off", "On"]
@@ -126,7 +134,7 @@ def tier_for(ms_ws: bool, two_cta: bool):
 # ── Validation ────────────────────────────────────────────────────────
 
 def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
-                    persistent=0, persistent_ok=True) -> list[str]:
+                    persistent=0, persistent_ok=True, shape=None) -> list[str]:
     """Return a list of human-readable warnings; empty list = valid.
 
     ``cluster`` selects the 2-CTA geometry: each CTA owns BN/2 columns of
@@ -138,6 +146,23 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
     """
     out: list[str] = []
     cta_group = 2 if cluster else 1
+
+    # Shape-tiling: does this config's tile geometry tile (M, N, K) exactly?
+    # Pure divisibility, known statically — mirrors the sweep's skip rule.
+    if shape is not None:
+        M, N, K = shape
+        if M % bm:
+            out.append(f"**M = {M}** must be a multiple of BM = {bm}.")
+        if N % bn:
+            out.append(f"**N = {N}** must be a multiple of BN = {bn}.")
+        if K % bk:
+            out.append(f"**K = {K}** must be a multiple of BK = {bk}.")
+        if cluster and (M % (cta_group * bm)):
+            out.append(
+                f"**M = {M}**: the 2-CTA cluster tiles {cta_group}×BM = {cta_group * bm} "
+                f"rows per cluster, so M must be a multiple of {cta_group * bm} "
+                f"(M % {cta_group * bm} = {M % (cta_group * bm)}).  Use the single-CTA tier for this M."
+            )
 
     # Persistent is a launch-side knob, but only tiers with the CTA tile
     # loop can be launched with grid < num_tiles without dropping output.
@@ -267,15 +292,17 @@ def substitute_launcher_constants(src: str, **values) -> str:
     return src
 
 
-def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0) -> dict:
+def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, no_allocate=0) -> dict:
     """Map UI knobs to the constant names used in the source files.
 
     PERSISTENT only appears in the launcher (it's a grid choice, not a
-    kernel constexpr); substitute_kernel_constexprs simply finds no match
-    in kernel.cu and leaves it untouched.
+    kernel constexpr); EPILOGUE_L1_NO_ALLOCATE only appears in the kernel.
+    substitute_* simply finds no match for the irrelevant one and leaves it
+    untouched.
     """
     return {"BM": bm, "BN": bn, "BK": bk, "NS": ns, "GROUP_SIZE_M": gsm,
-            "NUM_WARPS": nw, "TMA_STORE": tma_store, "PERSISTENT": persistent}
+            "NUM_WARPS": nw, "TMA_STORE": tma_store, "PERSISTENT": persistent,
+            "EPILOGUE_L1_NO_ALLOCATE": no_allocate}
 
 
 def _strip_module_docstring(src: str) -> str:
@@ -312,14 +339,15 @@ def _splice_fragments(src: str) -> str:
     return "".join(out)
 
 
-def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0) -> str:
+def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, no_allocate=0) -> str:
     """Return the substituted, fragment-stitched kernel.cu for a tier."""
     src = (KERNELS_DIR / tier["dir"] / "kernel.cu").read_text()
     src = _splice_fragments(src)
-    return substitute_kernel_constexprs(src, **knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store))
+    return substitute_kernel_constexprs(
+        src, **knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, no_allocate=no_allocate))
 
 
-def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0) -> str:
+def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, no_allocate=0) -> str:
     """Return a *self-contained* host script: runtime preamble + launcher.
 
     The result has no ``cuda_utils`` import and no ``sys.path`` hack — it
@@ -334,7 +362,7 @@ def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0) 
         "\n"
         f"Tier: {tier['label']}\n"
         f"Config: BM={bm} BN={bn} BK={bk} NS={ns} GROUP_SIZE_M={gsm} NUM_WARPS={nw} "
-        f"TMA_STORE={tma_store} PERSISTENT={persistent}\n"
+        f"TMA_STORE={tma_store} PERSISTENT={persistent} EPILOGUE_L1_NO_ALLOCATE={no_allocate}\n"
         "\n"
         "Run with:  python <this file>.py   (kernel.cu must sit alongside it)\n"
         "Requires:  torch, numpy, cuda-python (cuda.bindings), and nvcc on PATH.\n"
@@ -393,18 +421,24 @@ def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0):
     return ("verified" if e["correct"] else "failed"), e
 
 
-def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, shape_m, tma_store=0, persistent=0):
-    """Return the measured {rel_err, tflops, vs_cublas} for this combo at a
-    square shape (M=N=K=shape_m), or None if not in the matrix."""
+def shape_key(M, N, K):
+    """Canonical perf-matrix key for a shape: ``'S'`` for a square SxSxS
+    (back-compatible with the old int-string keys), else ``'MxNxK'``."""
+    return str(M) if (M == N == K) else f"{M}x{N}x{K}"
+
+
+def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, M, N, K, tma_store=0, persistent=0):
+    """Return the measured {rel_err, tflops, vs_cublas} for this combo at
+    shape (M, N, K), or None if not in the matrix."""
     e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw, tma_store, persistent))
     if e is None:
         return None
-    return (e.get("perf") or {}).get(str(shape_m))
+    return (e.get("perf") or {}).get(shape_key(M, N, K))
 
 
-def cublas_tflops(shape_m):
-    """Measured cuBLAS TFLOPS at a square shape, or None."""
-    return load_compat().get("cublas_tflops", {}).get(str(shape_m))
+def cublas_tflops(M, N, K):
+    """Measured cuBLAS TFLOPS at shape (M, N, K), or None."""
+    return load_compat().get("cublas_tflops", {}).get(shape_key(M, N, K))
 
 
 def toggles_for_dir(tier_dir):
@@ -415,28 +449,29 @@ def toggles_for_dir(tier_dir):
     return False, False
 
 
-def recommended_config(shape_m=None):
-    """The highest-measured-TFLOPS *correct* config at a square shape, from
-    the empirical matrix — the 'recommended' defaults shown on page load.
-    Returns a dict with tier_dir, knobs, tma_store, ms_ws, two_cta, tflops;
+def recommended_config(shape=None):
+    """The highest-measured-TFLOPS *correct* config from the empirical matrix
+    — the 'recommended' defaults.  ``shape`` is an (M, N, K) tuple (or an int
+    for a square shape); None / unswept falls back to the largest swept square
+    (its optimum is the stable page-load default).  Returns a dict with
+    tier_dir, knobs, tma_store, persistent, ms_ws, two_cta, tflops, shape;
     or None if the matrix is empty."""
     entries = [e for e in load_compat().get("entries", []) if e.get("correct")]
-    if not entries:
+    shapes = perf_shapes()
+    if not entries or not shapes:
         return None
-    ps = perf_shapes()
-    if not ps:
-        return None
-    # Recommend for the requested shape if we swept it; otherwise fall back to
-    # the nearest swept shape (a heuristic — there's no measurement for an
-    # unswept shape, and large shapes' optima are reasonably stable).
-    if shape_m is None or shape_m not in ps:
-        ref = max(ps) if shape_m is None else min(ps, key=lambda s: abs(s - shape_m))
+    if isinstance(shape, int):
+        shape = (shape, shape, shape)
+    keys = {shape_key(*t) for t in shapes}
+    if shape is not None and shape_key(*shape) in keys:
+        ref = shape_key(*shape)
     else:
-        ref = shape_m
-    shape_m = ref
+        # default / unswept: largest swept *square* shape (stable optimum).
+        squares = [t for t in shapes if t[0] == t[1] == t[2]]
+        ref = shape_key(*max(squares or shapes))
     best, best_tf = None, -1.0
     for e in entries:
-        tf = ((e.get("perf") or {}).get(str(shape_m)) or {}).get("tflops")
+        tf = ((e.get("perf") or {}).get(ref) or {}).get("tflops")
         if tf is not None and tf > best_tf:
             best, best_tf = e, tf
     if best is None:
@@ -445,9 +480,13 @@ def recommended_config(shape_m=None):
     knobs = {k: best[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw", "tma_store")}
     knobs["persistent"] = best.get("persistent", 0)
     return {**knobs, "ms_ws": ms_ws, "two_cta": two_cta,
-            "tflops": best_tf, "shape": shape_m}
+            "tflops": best_tf, "shape": ref}
 
 
 def perf_shapes():
-    """Square shapes (ints) the compat matrix recorded performance at."""
-    return load_compat().get("perf_shapes", [])
+    """List of (M, N, K) shapes the compat matrix recorded performance at.
+    Legacy square int entries are normalized to (S, S, S)."""
+    out = []
+    for s in load_compat().get("perf_shapes", []):
+        out.append(tuple(s) if isinstance(s, (list, tuple)) else (s, s, s))
+    return out
