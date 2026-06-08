@@ -77,7 +77,8 @@ def launch_spec(tier, k, M, N, K, num_sms=None):
     block  = (k["nw"] * 32, 1, 1)
     if k.get("persistent") and num_sms:
         # Persistent grid: one CTA per SM; the kernel's tile loop walks the rest.
-        grid = (num_sms, 1, 1)
+        # For the cluster tier the grid must stay a multiple of CTA_GROUP.
+        grid = (num_sms - num_sms % cta_group, 1, 1)
     elif tier["cluster"]:
         grid_m_clusters = M // (cta_group * k["bm"])
         grid_n          = N // k["bn"]

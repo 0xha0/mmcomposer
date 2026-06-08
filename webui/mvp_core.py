@@ -62,7 +62,9 @@ NW_OPTS  = [4, 8, 16]
 TMA_STORE_OPTS = [0, 1]
 # Persistent grid: 0 = one CTA per output tile (grid = num_tiles); 1 = one
 # CTA per SM, each walking a strided run of tiles (grid = #SMs).  A host/
-# launch knob — same cubin both ways — currently wired on Tier 2 only.
+# launch knob — same cubin both ways — wired on Tier 2 (a small reproducible
+# win).  Tried on the Tier 3 cluster but measured a wash (cluster-barrier
+# overhead cancels the gain), so it stays off there.
 PERSISTENT_OPTS = [0, 1]
 # On/off knobs are presented as dropdowns too, for a uniform UI (and to
 # leave room for an "Auto" value once auto-tuning lands).
@@ -107,7 +109,10 @@ TIER_MAP = {
         "dir":     "tier3_cluster_swizzle",
         "symbol":  "matmul_cluster",
         "cluster": True,
-        "persistent_ok": False,   # cluster + persistent not yet wired
+        # Persistent tried on the cluster tier (Step A) but measured a wash-
+        # to-loss: the extra cross-CTA cluster barrier per tile cancels the
+        # scheduling gain.  Kept non-persistent (the fast proven kernel).
+        "persistent_ok": False,
     },
     (False, True): None,   # invalid: 2-CTA cluster requires warp specialization
 }

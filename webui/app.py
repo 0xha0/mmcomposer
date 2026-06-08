@@ -115,8 +115,8 @@ with st.sidebar:
         "Persistent grid", mc.ONOFF_OPTS, index=_onoff("persistent"),
         help="Launch one CTA per SM and loop over output tiles inside the "
              "kernel (grid = #SMs) instead of one CTA per tile.  Trims "
-             "launch/tail overhead — a small free win on Tier 2.  Currently "
-             "wired on the warp-specialized single-CTA tier only.") == "On"
+             "launch/tail overhead — a small, config-dependent win on Tier 2.  "
+             "Wired on the warp-specialized single-CTA tier only.") == "On"
 
     st.subheader("Problem shape")
     shapes_text = st.text_area(
