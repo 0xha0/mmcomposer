@@ -60,7 +60,8 @@ NW_OPTS  = [4, 8, 16]
 # Epilogue TMEM->register load width: 32-bit elements per lane per tcgen05.ld
 # (.32x32b.xN).  Wider = fewer loads + fewer wait_ld syncs, more registers.
 # 8 = current behaviour.  Must divide COLS_PER_WARP (= BN / (NW/(BM/32))).
-EPILOGUE_LD_WIDTH_OPTS = [8, 16, 32, 64]
+# (x64 dropped — measured no better than x16/x32, just more registers.)
+EPILOGUE_LD_WIDTH_OPTS = [8, 16, 32]
 # Epilogue Phase-2 store path: 0 = all-thread int4 stores; 1 = one async
 # TMA store per CTA (swizzled SMEM staging).  A universal toggle.
 TMA_STORE_OPTS = [0, 1]
@@ -220,8 +221,8 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
                 )
             else:
                 cols_per_warp = bn // col_groups
-                if ld_width not in (8, 16, 32, 64):
-                    out.append(f"**Epilogue ld width = {ld_width}** must be one of 8/16/32/64.")
+                if ld_width not in (8, 16, 32):
+                    out.append(f"**Epilogue ld width = {ld_width}** must be one of 8/16/32.")
                 elif cols_per_warp % ld_width != 0:
                     out.append(
                         f"**Epilogue ld width = {ld_width}** must divide the per-warp column "

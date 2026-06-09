@@ -40,8 +40,7 @@
         float tmp[LDW];
         if constexpr (LDW == 8)       tcgen05_ld_32x32b_x8 (taddr_row + (uint32_t)n, tmp);
         else if constexpr (LDW == 16) tcgen05_ld_32x32b_x16(taddr_row + (uint32_t)n, tmp);
-        else if constexpr (LDW == 32) tcgen05_ld_32x32b_x32(taddr_row + (uint32_t)n, tmp);
-        else                          tcgen05_ld_32x32b_x64(taddr_row + (uint32_t)n, tmp);
+        else                          tcgen05_ld_32x32b_x32(taddr_row + (uint32_t)n, tmp);
         tcgen05_wait_ld();
 
         __nv_bfloat162 packed[LDW / 2];
