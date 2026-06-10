@@ -26,8 +26,10 @@ WORKER = HERE / "_live_bench_worker.py"
 DRIVER = HERE / "tests" / "gpu_codegen_driver.py"
 
 DEFAULT_SRUN_ARGS = "--partition=dedicated --gres=gpu:nvidia_b200:1 --time=00:10:00"
-# Autotune sweeps many combos, so it needs a longer allocation window.
-DEFAULT_AUTOTUNE_SRUN_ARGS = "--partition=dedicated --gres=gpu:nvidia_b200:1 --time=01:00:00"
+# Autotune sweeps many combos with a 1000/1000 steady-state do_bench window
+# (~2s/combo), so a big grid (>1k combos) needs a multi-hour allocation.  The
+# job releases when the sweep finishes — this is just the ceiling.
+DEFAULT_AUTOTUNE_SRUN_ARGS = "--partition=dedicated --gres=gpu:nvidia_b200:1 --time=03:00:00"
 
 
 def live_available() -> bool:

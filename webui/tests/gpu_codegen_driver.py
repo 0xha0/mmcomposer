@@ -47,6 +47,14 @@ from cuda.bindings import driver
 
 SCRATCH = WEBUI / "tests" / "_scratch" / "gpu_driver"
 
+# Steady-state benchmark window for the sweep (kernels AND the cuBLAS reference).
+# do_bench's 20ms-warmup default measures partly clock-boosted, so a fresh/idle
+# B200 reports inflated TFLOPS; 1000ms settles clocks to steady state and makes
+# the autotune ratio match the per-config "Benchmark this config" path (which
+# already uses 1000/1000).  Override via env for a quicker, less accurate sweep.
+BENCH_WARMUP_MS = int(os.environ.get("MMCOMPOSER_BENCH_WARMUP_MS", "1000"))
+BENCH_REP_MS    = int(os.environ.get("MMCOMPOSER_BENCH_REP_MS", "1000"))
+
 
 def all_combos(tier_dirs, bn_opts=None):
     """Yield (tier_key, tier, knobs-dict) over the dropdown grid.
@@ -220,7 +228,8 @@ def launch_from_cubin(tier, k, arch, shapes, do_bench=True, num_sms=None):
             entry = {"rel_err": rel, "correct": correct, "us": None, "tflops": None}
             if do_bench and correct:
                 us = rt.time_kernel_us(lambda: rt.launch(
-                    kernel, grid=grid, block=block, shared=shared, args=args, sync=False))
+                    kernel, grid=grid, block=block, shared=shared, args=args, sync=False),
+                    warmup_ms=BENCH_WARMUP_MS, rep_ms=BENCH_REP_MS)
                 entry["us"] = us
                 entry["tflops"] = (2.0 * M * N * K) / (us * 1e-6) / 1e12
             res["perf"][mc.shape_key(M, N, K)] = entry
@@ -347,7 +356,8 @@ def main():
         torch.manual_seed(0)
         A = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
         B = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
-        us = rt.time_kernel_us(lambda: torch.mm(A, B))   # A:(M,K) @ B:(K,N)
+        us = rt.time_kernel_us(lambda: torch.mm(A, B),   # A:(M,K) @ B:(K,N)
+                               warmup_ms=BENCH_WARMUP_MS, rep_ms=BENCH_REP_MS)
         key = mc.shape_key(M, N, K)
         cublas_tflops[key] = (2.0 * M * N * K) / (us * 1e-6) / 1e12
         print(f"# cuBLAS {key}: {cublas_tflops[key]:.0f} TFLOPS", flush=True)
