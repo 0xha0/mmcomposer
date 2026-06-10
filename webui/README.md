@@ -29,6 +29,32 @@ it, and shows **measured** performance for that exact config.
 `tutorial/` is a *reference implementation* only; the MVP renders its own
 owned codebase under `webui/kernels/`.
 
+## Why composable — a worked example
+
+The whole premise is that **there is no globally-best config**: the
+optimizations don't add up linearly, and the optimal *combination* shifts with
+the problem shape. A knob that's the biggest win on one shape can be dead weight
+on another. So nothing is on by default — the autotune sweeps the grid and lets
+**measured TFLOPS decide, per shape.**
+
+A concrete example, same kernel family + same knobs, three shapes (M×N×K) →
+three different winners:
+
+| shape (M×N×K)       | regime                    | winning combo               | overlap Δ | persistent Δ |
+|---------------------|---------------------------|-----------------------------|-----------|--------------|
+| 32768×4608×**768**  | low-K, epilogue-bound     | persistent + overlap        | **+7–11%**| helps        |
+| 32768×**768**×4608  | small-N, mid-K            | 2-CTA + persistent + overlap| **+2.5%** | **+2.0%**    |
+| **8192³**           | big square, compute-bound | 2-CTA, *plain* (no overlap) | **~0%**   | wash / loss  |
+
+The same knob (epilogue/K-loop overlap) swings from the single biggest lever to
+a no-op purely on shape — its gain tracks the epilogue's fraction of per-tile
+time, which decays smoothly with K (**+7–11% at K=768 → +2.5% at K=4608 → ~0 at
+K=8192**), so it's *not* "low-K only." The per-knob attribution above comes from
+median Δ over hundreds of matched-tile-knob A/B pairs in one autotune sweep;
+trust the winning *cluster*, not the exact #1, since there's a ~3% thermal-drift
+noise floor (confirm sub-1.5% wins with ≥3 fresh runs, and compare ratios — % of
+cuBLAS — not absolute TFLOPS across separate GPU allocations).
+
 ## Layout
 
 ```
