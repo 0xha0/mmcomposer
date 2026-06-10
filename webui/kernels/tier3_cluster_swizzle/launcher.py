@@ -25,6 +25,7 @@ TMA_STORE    = 0
 PERSISTENT   = 0
 TCGEN05_LD_WIDTH = 8
 EPILOGUE_OVERLAP = 0
+EPILOGUE_SPLIT = 0
 
 CTA_GROUP    = 2
 BN_LOCAL     = BN // CTA_GROUP
@@ -35,7 +36,9 @@ THREADS      = (NUM_WARPS + 4) * 32 if EPILOGUE_OVERLAP else NUM_WARPS * 32
 A_SLOT_BYTES = BM       * BK * ELEM_BYTES
 B_SLOT_BYTES = BN_LOCAL * BK * ELEM_BYTES
 SLOT_BYTES   = A_SLOT_BYTES + B_SLOT_BYTES
-EPI_BYTES    = BM * (BN if TMA_STORE else BN + 8) * ELEM_BYTES
+EPI_LD       = ((BN // 2 + 8) if (EPILOGUE_OVERLAP and EPILOGUE_SPLIT and not TMA_STORE)
+                else (BN if TMA_STORE else BN + 8))
+EPI_BYTES    = BM * EPI_LD * ELEM_BYTES
 SHARED_BYTES = ((NS * SLOT_BYTES + EPI_BYTES) if EPILOGUE_OVERLAP
                 else max(NS * SLOT_BYTES, EPI_BYTES)) + 1024
 HERE         = os.path.dirname(os.path.abspath(__file__))
@@ -111,7 +114,8 @@ for (M, N, K) in [(2048, 2048, 2048), (4096, 4096, 4096), (8192, 8192, 8192)]:
     print(f"{ok}  M=N=K={M:>5}   grid={grid[0]} CTAs ({CTA_GROUP}-CTA clusters)   rel err={rel:.2%}")
     print(f"     BM={BM} BN={BN} BK={BK} NS={NS} GSM={GROUP_SIZE_M} NW={NUM_WARPS} "
           f"TMA_STORE={TMA_STORE} PERSISTENT={PERSISTENT} "
-          f"EPILOGUE_OVERLAP={EPILOGUE_OVERLAP}   {us:7.1f} us/call   "
+          f"EPILOGUE_OVERLAP={EPILOGUE_OVERLAP} EPILOGUE_SPLIT={EPILOGUE_SPLIT}   "
+          f"{us:7.1f} us/call   "
           f"{tf:6.1f} TFLOPS")
     print()
 

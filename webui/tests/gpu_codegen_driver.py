@@ -66,12 +66,16 @@ def all_combos(tier_dirs, bn_opts=None):
         # EPILOGUE_OVERLAP only applies on the persistent-capable path; most
         # overlap=1 combos are filtered by the validator (persistent/NW/SMEM).
         ov_opts = mc.EPILOGUE_OVERLAP_OPTS if tier.get("persistent_ok") else [0]
-        for bm, bn, bk, ns, gsm, nw, ts, pers, ldw, ov in itertools.product(
+        # EPILOGUE_SPLIT is a Tier 3 cluster epilogue staging variant.  Keep
+        # non-cluster sweeps focused on code they can actually generate.
+        sp_opts = mc.EPILOGUE_SPLIT_OPTS if tier.get("cluster") else [0]
+        for bm, bn, bk, ns, gsm, nw, ts, pers, ldw, ov, sp in itertools.product(
             mc.BM_OPTS, bn_list, mc.BK_OPTS, mc.NS_OPTS, mc.GSM_OPTS, mc.NW_OPTS,
-            mc.TMA_STORE_OPTS, pers_opts, ld_list, ov_opts
+            mc.TMA_STORE_OPTS, pers_opts, ld_list, ov_opts, sp_opts
         ):
             yield tier, dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
-                             tma_store=ts, persistent=pers, ld_width=ldw, overlap=ov)
+                             tma_store=ts, persistent=pers, ld_width=ldw, overlap=ov,
+                             split_epilogue=sp)
 
 
 def parse_perf_shapes(spec):
@@ -109,7 +113,10 @@ def launch_spec(tier, k, M, N, K, num_sms=None):
     a_slot = k["bm"] * k["bk"] * 2
     b_slot = bn_local * k["bk"] * 2
     slot   = a_slot + b_slot
-    epi    = k["bm"] * (k["bn"] if k["tma_store"] else k["bn"] + 8) * 2
+    if k.get("overlap", 0) and tier["cluster"] and k.get("split_epilogue", 0) and not k["tma_store"]:
+        epi = k["bm"] * (k["bn"] // 2 + 8) * 2
+    else:
+        epi = k["bm"] * (k["bn"] if k["tma_store"] else k["bn"] + 8) * 2
     # Overlap runs ring + epilogue staging concurrently -> disjoint (ring+epi).
     shared = ((k["ns"] * slot + epi) if k.get("overlap", 0) else max(k["ns"] * slot, epi)) + 1024
     # Overlap: 2 stream warps (TMA+MMA) in warpgroup 0 + nw epilogue warps from
@@ -133,7 +140,8 @@ def tag_for(tier, k):
     # persistent does NOT (launch-only, same cubin) so it stays out.
     return (f"{tier['dir']}_bm{k['bm']}_bn{k['bn']}_bk{k['bk']}"
             f"_ns{k['ns']}_gsm{k['gsm']}_nw{k['nw']}_ts{k['tma_store']}"
-            f"_ld{k.get('ld_width', 8)}_ov{k.get('overlap', 0)}")
+            f"_ld{k.get('ld_width', 8)}_ov{k.get('overlap', 0)}"
+            f"_sp{k.get('split_epilogue', 0)}")
 
 
 def render_to_dir(tier, k):
@@ -142,7 +150,8 @@ def render_to_dir(tier, k):
     d.mkdir(parents=True, exist_ok=True)
     src = mc.render_kernel(tier, k["bm"], k["bn"], k["bk"], k["ns"], k["gsm"], k["nw"],
                            tma_store=k["tma_store"], ld_width=k.get("ld_width", 8),
-                           overlap=k.get("overlap", 0))
+                           overlap=k.get("overlap", 0),
+                           split_epilogue=k.get("split_epilogue", 0))
     p = d / "kernel.cu"
     p.write_text(src)
     return p
@@ -242,7 +251,8 @@ def build_to_run(tier_dirs, invalid_sample, bn_opts=None):
                                       persistent=k.get("persistent", 0),
                                       persistent_ok=tier.get("persistent_ok", False),
                                       ld_width=k.get("ld_width", 8),
-                                      overlap=k.get("overlap", 0))
+                                      overlap=k.get("overlap", 0),
+                                      split_epilogue=k.get("split_epilogue", 0))
         (valid if not warnings else invalid).append((tier, k))
     stepi = max(1, len(invalid) // max(1, invalid_sample))
     inv_sample = invalid[::stepi][:invalid_sample]
@@ -462,6 +472,7 @@ def main():
         entries.append({k: r[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw",
                                            "tma_store", "persistent")}
                        | {"ld_width": r.get("ld_width", 8), "overlap": r.get("overlap", 0),
+                          "split_epilogue": r.get("split_epilogue", 0),
                           "correct": bool(r["correct"]), "perf": perf})
     matrix = {
         "generated_by": "webui/tests/gpu_codegen_driver.py",

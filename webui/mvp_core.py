@@ -82,6 +82,11 @@ PERSISTENT_OPTS = [0, 1]
 # persistent on, int4 store (tma_store=0), and the disjoint-SMEM budget (NS
 # small).  A win on epilogue-bound low-K shapes.  Tier 2 and Tier 3.
 EPILOGUE_OVERLAP_OPTS = [0, 1]
+# Split the overlapped Tier 3 int4 epilogue into two half-BN staging/store
+# passes.  This roughly halves the epilogue SMEM footprint, allowing a deeper
+# K-loop ring such as NS=5 at BN=256.  It is exposed as a separate experiment
+# knob because it trades less SMEM for an extra epilogue pass/barrier.
+EPILOGUE_SPLIT_OPTS = [0, 1]
 # On/off knobs are presented as dropdowns too, for a uniform UI (and to
 # leave room for an "Auto" value once auto-tuning lands).
 ONOFF_OPTS = ["Off", "On"]
@@ -142,7 +147,7 @@ def tier_for(ms_ws: bool, two_cta: bool):
 
 def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
                     persistent=0, persistent_ok=True, shape=None, ld_width=8,
-                    overlap=0) -> list[str]:
+                    overlap=0, split_epilogue=0) -> list[str]:
     """Return a list of human-readable warnings; empty list = valid.
 
     ``cluster`` selects the 2-CTA geometry: each CTA owns BN/2 columns of
@@ -201,6 +206,19 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
         if tma_store:
             out.append("**Epilogue overlap** uses the int4 store path; turn off "
                        "**TMA store epilogue**.")
+
+    if split_epilogue:
+        if not cluster:
+            out.append("**Split epilogue writeback** currently applies only to "
+                       "the **2-CTA cluster MMA** path.")
+        if not overlap:
+            out.append("**Split epilogue writeback** requires **Epilogue overlap**.")
+        if tma_store:
+            out.append("**Split epilogue writeback** uses the int4 store path; "
+                       "turn off **TMA store epilogue**.")
+        if bn % 2 != 0 or (bn // 2) % 8 != 0:
+            out.append(f"**BN = {bn}** must split into two int4-aligned halves "
+                       "for split epilogue writeback.")
 
     if ns < 2:
         out.append(
@@ -261,6 +279,13 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
                         f"span COLS_PER_WARP = BN/(NW/(BM/32)) = {cols_per_warp} "
                         f"(at BN={bn}, NW={nw}).  Use a smaller ld width or fewer warps."
                     )
+                if split_epilogue:
+                    split_cols_per_warp = (bn // 2) // col_groups
+                    if (bn // 2) % col_groups != 0 or split_cols_per_warp % ld_width != 0:
+                        out.append(
+                            f"**Split epilogue** needs BN/2 divided across {col_groups} column groups "
+                            f"to be a multiple of LD width {ld_width} (got {split_cols_per_warp})."
+                        )
     # NW < 4 triggers a separate tcgen05 quirk (wrong output); options
     # start at 4 so this is informational only.
     if nw < 4:
@@ -278,17 +303,25 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
             f"**BM x BN = {bm * bn}** is not a multiple of THREADS x 8 = {nw * 32 * 8} "
             "(Phase-2 epilogue flat walk would leave positions uncovered)."
         )
+    if split_epilogue and (bm * (bn // 2)) % (nw * 32 * 8) != 0:
+        out.append(
+            f"**BM x (BN/2) = {bm * (bn // 2)}** is not a multiple of "
+            f"THREADS x 8 = {nw * 32 * 8} (split epilogue flat walk would "
+            "leave positions uncovered)."
+        )
     # SMEM budget (B200 = 228 KB/CTA nominal).  Normally the K-loop ring and epilogue
     # staging are time-disjoint (size for max).  With epilogue overlap they run
     # concurrently, so the staging is a *separate* region (size = ring + epi).
-    # The kernel also has static shared state (mbarriers, TMEM holder, etc.),
-    # and B200 rejected a 227 KB dynamic request for Tier 3 overlap NS=5.
-    # Keep a small guard band for overlap configs until split writeback reduces
-    # the epilogue staging footprint.
     a_slot   = bm * bk * 2
     b_slot   = (bn // cta_group) * bk * 2
     slot     = a_slot + b_slot
-    epi      = bm * (bn if tma_store else (bn + 8)) * 2   # TMA store needs a dense BM×BN buffer
+    # Tier 3 split writeback stages one half-BN column panel at a time, reducing
+    # epilogue SMEM enough to try deeper rings such as NS=5 at BN=256.
+    if overlap and cluster and split_epilogue and not tma_store:
+        epi = bm * (bn // 2 + 8) * 2
+    else:
+        # TMA store needs a dense BM x BN buffer; int4 uses +8 padding.
+        epi = bm * (bn if tma_store else (bn + 8)) * 2
     smem     = (ns * slot + epi if overlap else max(ns * slot, epi)) + 1024
     smem_cap = (224 if overlap else 228) * 1024
     if smem > smem_cap:
@@ -329,7 +362,7 @@ def substitute_launcher_constants(src: str, **values) -> str:
             src,
         )
     for name in ("NS", "GROUP_SIZE_M", "NUM_WARPS", "TMA_STORE", "PERSISTENT",
-                 "TCGEN05_LD_WIDTH", "EPILOGUE_OVERLAP"):
+                 "TCGEN05_LD_WIDTH", "EPILOGUE_OVERLAP", "EPILOGUE_SPLIT"):
         if name in values:
             src = re.sub(
                 rf"^({name}\s*=\s*)\d+",
@@ -340,7 +373,8 @@ def substitute_launcher_constants(src: str, **values) -> str:
     return src
 
 
-def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8, overlap=0) -> dict:
+def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8,
+                overlap=0, split_epilogue=0) -> dict:
     """Map UI knobs to the constant names used in the source files.
 
     PERSISTENT only appears in the launcher (it's a grid choice, not a
@@ -349,7 +383,8 @@ def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8, 
     """
     return {"BM": bm, "BN": bn, "BK": bk, "NS": ns, "GROUP_SIZE_M": gsm,
             "NUM_WARPS": nw, "TMA_STORE": tma_store, "PERSISTENT": persistent,
-            "TCGEN05_LD_WIDTH": ld_width, "EPILOGUE_OVERLAP": overlap}
+            "TCGEN05_LD_WIDTH": ld_width, "EPILOGUE_OVERLAP": overlap,
+            "EPILOGUE_SPLIT": split_epilogue}
 
 
 def _strip_module_docstring(src: str) -> str:
@@ -387,15 +422,18 @@ def _splice_fragments(src: str) -> str:
     return "".join(out)
 
 
-def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, ld_width=8, overlap=0) -> str:
+def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, ld_width=8,
+                  overlap=0, split_epilogue=0) -> str:
     """Return the substituted, fragment-stitched kernel.cu for a tier."""
     src = (KERNELS_DIR / tier["dir"] / "kernel.cu").read_text()
     src = _splice_fragments(src)
     return substitute_kernel_constexprs(
-        src, **knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, ld_width=ld_width, overlap=overlap))
+        src, **knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, ld_width=ld_width,
+                           overlap=overlap, split_epilogue=split_epilogue))
 
 
-def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, overlap=0) -> str:
+def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0,
+                overlap=0, split_epilogue=0) -> str:
     """Return a *self-contained* host script: runtime preamble + launcher.
 
     The result has no ``cuda_utils`` import and no ``sys.path`` hack — it
@@ -404,13 +442,15 @@ def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, 
     runtime  = _strip_module_docstring(RUNTIME_PY.read_text())
     launcher = (KERNELS_DIR / tier["dir"] / "launcher.py").read_text()
     launcher = substitute_launcher_constants(
-        launcher, **knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, persistent, overlap=overlap))
+        launcher, **knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, persistent,
+                                overlap=overlap, split_epilogue=split_epilogue))
     header = (
         '"""Self-contained matmul kernel launcher generated by mmcomposer.\n'
         "\n"
         f"Tier: {tier['label']}\n"
         f"Config: BM={bm} BN={bn} BK={bk} NS={ns} GROUP_SIZE_M={gsm} NUM_WARPS={nw} "
-        f"TMA_STORE={tma_store} PERSISTENT={persistent} EPILOGUE_OVERLAP={overlap}\n"
+        f"TMA_STORE={tma_store} PERSISTENT={persistent} EPILOGUE_OVERLAP={overlap} "
+        f"EPILOGUE_SPLIT={split_epilogue}\n"
         "\n"
         "Run with:  python <this file>.py   (kernel.cu must sit alongside it)\n"
         "Requires:  torch, numpy, cuda-python (cuda.bindings), and nvcc on PATH.\n"
@@ -455,16 +495,18 @@ def _compat_index() -> dict:
     for e in load_compat().get("entries", []):
         idx[(e["tier"], e["bm"], e["bn"], e["bk"], e["ns"], e["gsm"], e["nw"],
              e.get("tma_store", 0), e.get("persistent", 0), e.get("ld_width", 8),
-             e.get("overlap", 0))] = e
+             e.get("overlap", 0), e.get("split_epilogue", 0))] = e
     return idx
 
 
-def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8, overlap=0):
+def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0,
+                  ld_width=8, overlap=0, split_epilogue=0):
     """Return ('verified'|'failed'|'unknown', entry|None) for a combo.
 
     'verified'/'failed' come from the empirical B200 sweep; 'unknown'
     means the combo wasn't in the swept grid (fall back to static)."""
-    e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw, tma_store, persistent, ld_width, overlap))
+    e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw, tma_store,
+                             persistent, ld_width, overlap, split_epilogue))
     if e is None:
         return "unknown", None
     return ("verified" if e["correct"] else "failed"), e
@@ -476,10 +518,12 @@ def shape_key(M, N, K):
     return str(M) if (M == N == K) else f"{M}x{N}x{K}"
 
 
-def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, M, N, K, tma_store=0, persistent=0, ld_width=8, overlap=0):
+def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, M, N, K, tma_store=0,
+                persistent=0, ld_width=8, overlap=0, split_epilogue=0):
     """Return the measured {rel_err, tflops, vs_cublas} for this combo at
     shape (M, N, K), or None if not in the matrix."""
-    e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw, tma_store, persistent, ld_width, overlap))
+    e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw, tma_store,
+                             persistent, ld_width, overlap, split_epilogue))
     if e is None:
         return None
     return (e.get("perf") or {}).get(shape_key(M, N, K))
@@ -530,6 +574,7 @@ def recommended_config(shape=None):
     knobs["persistent"] = best.get("persistent", 0)
     knobs["ld_width"] = best.get("ld_width", 8)
     knobs["overlap"] = best.get("overlap", 0)
+    knobs["split_epilogue"] = best.get("split_epilogue", 0)
     return {**knobs, "ms_ws": ms_ws, "two_cta": two_cta,
             "tflops": best_tf, "shape": ref}
 

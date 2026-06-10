@@ -19,6 +19,7 @@ def main():
     ap.add_argument("--cluster", type=int, default=0)
     ap.add_argument("--persistent", type=int, default=0)
     ap.add_argument("--overlap", type=int, default=0)
+    ap.add_argument("--split_epilogue", type=int, default=0)
     for k in ("bm", "bn", "bk", "ns", "nw", "tma_store"):
         ap.add_argument(f"--{k}", type=int, required=True)
     ap.add_argument("-M", type=int, required=True)
@@ -43,7 +44,10 @@ def main():
         cta_group = 2 if a.cluster else 1
         bn_local = a.bn // cta_group
         slot = a.bm * a.bk * 2 + bn_local * a.bk * 2
-        epi = a.bm * (a.bn if a.tma_store else a.bn + 8) * 2
+        if a.overlap and a.cluster and a.split_epilogue and not a.tma_store:
+            epi = a.bm * (a.bn // 2 + 8) * 2
+        else:
+            epi = a.bm * (a.bn if a.tma_store else a.bn + 8) * 2
         shared = (a.ns * slot + epi if a.overlap else max(a.ns * slot, epi)) + 1024
         block = ((a.nw + 4) * 32 if a.overlap else a.nw * 32, 1, 1)
         if a.persistent:
@@ -84,8 +88,8 @@ def main():
         # inter-allocation boost-clock draw still applies (fresh B200 per srun).
         us = rt.time_kernel_us(lambda: rt.launch(kernel, grid=grid, block=block,
                                                  shared=shared, args=args, sync=False),
-                               warmup_ms=50, rep_ms=500)
-        cub_us = rt.time_kernel_us(lambda: torch.mm(A, B), warmup_ms=50, rep_ms=500)
+                               warmup_ms=1000, rep_ms=1000)
+        cub_us = rt.time_kernel_us(lambda: torch.mm(A, B), warmup_ms=1000, rep_ms=1000)
         flops = 2.0 * M * N * K
         res.update(ok=(rel < 5e-2), rel_err=rel, us=us, tflops=flops / (us * 1e-6) / 1e12,
                    cublas_us=cub_us, cublas_tflops=flops / (cub_us * 1e-6) / 1e12,

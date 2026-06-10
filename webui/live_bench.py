@@ -46,7 +46,8 @@ def _sig(tier, knobs, M, N, K) -> str:
 def run_live_bench(tier, knobs: dict, M: int, N: int, K: int, timeout: int = 900) -> dict:
     """Render → srun(compile+run+cuBLAS) → parsed result dict.
 
-    knobs: {bm,bn,bk,ns,gsm,nw,tma_store,persistent}.  Returns a dict with
+    knobs: {bm,bn,bk,ns,gsm,nw,tma_store,persistent,ld_width,overlap,split_epilogue}.
+    Returns a dict with
     ok/tflops/cublas_tflops/vs_cublas/rel_err/us (+ error/stderr on failure).
     """
     SCRATCH.mkdir(parents=True, exist_ok=True)
@@ -60,7 +61,8 @@ def run_live_bench(tier, knobs: dict, M: int, N: int, K: int, timeout: int = 900
     kernel_path.write_text(mc.render_kernel(
         tier, knobs["bm"], knobs["bn"], knobs["bk"], knobs["ns"], knobs["gsm"],
         knobs["nw"], tma_store=knobs.get("tma_store", 0),
-        ld_width=knobs.get("ld_width", 8), overlap=knobs.get("overlap", 0)))
+        ld_width=knobs.get("ld_width", 8), overlap=knobs.get("overlap", 0),
+        split_epilogue=knobs.get("split_epilogue", 0)))
 
     py = os.environ.get("MMCOMPOSER_PY", sys.executable)
     srun_args = shlex.split(os.environ.get("MMCOMPOSER_SRUN_ARGS", DEFAULT_SRUN_ARGS))
@@ -71,6 +73,7 @@ def run_live_bench(tier, knobs: dict, M: int, N: int, K: int, timeout: int = 900
            "--ns", str(knobs["ns"]), "--nw", str(knobs["nw"]),
            "--tma_store", str(knobs.get("tma_store", 0)),
            "--overlap", str(knobs.get("overlap", 0)),
+           "--split_epilogue", str(knobs.get("split_epilogue", 0)),
            "-M", str(M), "-N", str(N), "-K", str(K)]
 
     try:
@@ -127,6 +130,7 @@ def _rank_matrix(out_matrix, M, N, K) -> dict:
             results.append({**{k: e[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm",
                                                  "nw", "tma_store", "persistent")},
                             "ld_width": e.get("ld_width", 8), "overlap": e.get("overlap", 0),
+                            "split_epilogue": e.get("split_epilogue", 0),
                             "tflops": p["tflops"], "vs_cublas": p.get("vs_cublas"),
                             "rel_err": p.get("rel_err")})
     results.sort(key=lambda r: r["tflops"], reverse=True)
