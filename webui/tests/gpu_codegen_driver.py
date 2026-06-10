@@ -353,6 +353,14 @@ def main():
         print(f"# cuBLAS {key}: {cublas_tflops[key]:.0f} TFLOPS", flush=True)
         del A, B
     torch.cuda.empty_cache()
+    # Publish cuBLAS refs next to the jsonl so a UI can compute vs_cublas for a
+    # LIVE leaderboard before the sweep finishes (mirrors the .nvalid sidecar).
+    try:
+        cbp = (args.jsonl + ".cublas") if args.jsonl else str(SCRATCH / "cublas.json")
+        with open(cbp, "w") as _f:
+            json.dump(cublas_tflops, _f)
+    except Exception:
+        pass
 
     # ── Phase 1: render + parallel nvcc compile (CPU-bound) ──────────
     for (t, k, _) in to_run:
