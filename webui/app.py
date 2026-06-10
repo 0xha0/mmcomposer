@@ -394,7 +394,41 @@ with tab_bench:
             ws, cta = mc.toggles_for_dir(tier_dir)
             return ("On" if ws else "Off", "On" if cta else "Off")
 
-        # Stateful: a background sweep (job) + a polled progress bar.
+        def _render_leaderboard(at, *, live):
+            """Best-line + ranked table.  live=True: 'best so far' + fixed top-10
+            (re-rendered each poll); live=False: final result + a top-N slider."""
+            b = at["results"][0]
+            bws, bcta = _knob_cols(b["tier"])
+            vs_b = f"{b['vs_cublas']:.0%}" if b.get("vs_cublas") else "—"
+            cub = f"{at['cublas_tflops']:.0f}" if at.get("cublas_tflops") else "?"
+            head = (f"📈 **Best so far** ({at['n_combos']} done)" if live
+                    else f"🏆 **Best of {at['n_combos']} combos**")
+            st.markdown(
+                f"{head} at {m0}×{n0}×{k0}: **{b['tflops']:.0f} TFLOPS** ({vs_b} of cuBLAS "
+                f"{cub}) — Warp-spec={bws} · 2-CTA cluster={bcta} · "
+                f"BN={b['bn']} NS={b['ns']} GSM={b['gsm']} NW={b['nw']} "
+                f"TMA_STORE={b['tma_store']} PERSISTENT={b['persistent']} "
+                f"LD_WIDTH={b.get('ld_width', 8)} OVERLAP={b.get('overlap', 0)} "
+                f"SPLIT={b.get('split_epilogue', 0)}")
+            n_res = len(at["results"])
+            if live:
+                top_n = min(10, n_res)
+            else:
+                top_n = st.slider("Show top", min_value=3, max_value=min(50, n_res),
+                                  value=min(10, n_res), key="autotune_topn") if n_res > 3 else n_res
+            rows = []
+            for i, r in enumerate(at["results"][:top_n]):
+                ws, cta = _knob_cols(r["tier"])
+                rows.append({"#": i + 1, "Warp-spec": ws, "2-CTA": cta,
+                             "BN": r["bn"], "NS": r["ns"], "GSM": r["gsm"], "NW": r["nw"],
+                             "TMA": r["tma_store"], "PERS": r["persistent"],
+                             "LD": r.get("ld_width", 8), "OV": r.get("overlap", 0),
+                             "SPLIT": r.get("split_epilogue", 0),
+                             "TFLOPS": f"{r['tflops']:.0f}",
+                             "vs cuBLAS": f"{r['vs_cublas']:.0%}" if r.get("vs_cublas") else "—"})
+            st.dataframe(rows, width="stretch", hide_index=True)
+
+        # Stateful: a background sweep (job) + a polled progress bar + LIVE leaderboard.
         job = st.session_state.get("autotune_job")
         if job is not None:
             done, total, finished = live_bench.autotune_poll(job)
@@ -415,6 +449,9 @@ with tab_bench:
                         pass
                     st.session_state.pop("autotune_job", None)
                     st.rerun()
+                part = live_bench.autotune_partial(job)   # rank what's streamed in so far
+                if part.get("ok"):
+                    _render_leaderboard(part, live=True)
                 time.sleep(2.0)
                 st.rerun()
         elif st.button("🔧  Autotune: sweep combos on a B200", key="autotune_btn"):
@@ -425,30 +462,7 @@ with tab_bench:
 
         at = at_cache.get(at_sig)
         if at and at.get("ok"):
-            b = at["results"][0]
-            bws, bcta = _knob_cols(b["tier"])
-            st.success(
-                f"🏆 **Best of {at['n_combos']} combos** at {m0}×{n0}×{k0}: "
-                f"**{b['tflops']:.0f} TFLOPS** ({b['vs_cublas']:.0%} of cuBLAS "
-                f"{at['cublas_tflops']:.0f}) — Warp-spec={bws} · 2-CTA cluster={bcta} · "
-                f"BN={b['bn']} NS={b['ns']} GSM={b['gsm']} NW={b['nw']} "
-                f"TMA_STORE={b['tma_store']} PERSISTENT={b['persistent']} "
-                f"LD_WIDTH={b.get('ld_width', 8)} OVERLAP={b.get('overlap', 0)} "
-                f"SPLIT={b.get('split_epilogue', 0)}")
-            n_res = len(at["results"])
-            top_n = st.slider("Show top", min_value=3, max_value=min(50, n_res),
-                              value=min(10, n_res), key="autotune_topn") if n_res > 3 else n_res
-            rows = []
-            for i, r in enumerate(at["results"][:top_n]):
-                ws, cta = _knob_cols(r["tier"])
-                rows.append({"#": i + 1, "Warp-spec": ws, "2-CTA": cta,
-                             "BN": r["bn"], "NS": r["ns"], "GSM": r["gsm"], "NW": r["nw"],
-                             "TMA": r["tma_store"], "PERS": r["persistent"],
-                             "LD": r.get("ld_width", 8), "OV": r.get("overlap", 0),
-                             "SPLIT": r.get("split_epilogue", 0),
-                             "TFLOPS": f"{r['tflops']:.0f}",
-                             "vs cuBLAS": f"{r['vs_cublas']:.0%}" if r.get("vs_cublas") else "—"})
-            st.dataframe(rows, width="stretch", hide_index=True)
+            _render_leaderboard(at, live=False)
             st.caption("Set the sidebar to the winning knobs (and re-generate) to download that kernel.")
         elif at:
             st.error(f"Autotune failed: {at.get('error')}")
@@ -456,8 +470,8 @@ with tab_bench:
                 st.code(at["stderr"], language="text")
         elif st.session_state.get("autotune_job") is None:
             st.caption("Autotune submits one srun that compiles + benchmarks every valid combo "
-                       "(tens to hundreds of kernels), with a live progress bar.  Production "
-                       "(warp-spec on) is faster; Full is the complete search.")
+                       "(tens to hundreds of kernels), with a live progress bar + leaderboard. "
+                       "Production (warp-spec on) is faster; Full is the complete search.")
         st.divider()
 
     try:

@@ -165,7 +165,8 @@ def autotune_start(tier_dirs, M, N, K, bn_opts=None) -> dict:
     out_matrix = _out_matrix(tier_dirs, M, N, K, bn_opts)
     jsonl = pathlib.Path(str(out_matrix)[:-5] + ".jsonl")   # autotune_<tag>.jsonl
     n_valid = pathlib.Path(str(jsonl) + ".nvalid")
-    for f in (out_matrix, jsonl, n_valid):                   # clean slate for fresh progress
+    cublas = pathlib.Path(str(jsonl) + ".cublas")
+    for f in (out_matrix, jsonl, n_valid, cublas):           # clean slate for fresh progress
         try:
             f.unlink()
         except FileNotFoundError:
@@ -192,6 +193,48 @@ def autotune_poll(job) -> tuple:
     except FileNotFoundError:
         pass
     return done, total, finished
+
+
+def autotune_partial(job) -> dict:
+    """Rank the results that have streamed into the jsonl SO FAR, for a live
+    leaderboard during the sweep.  Reads the per-run jsonl (one line per combo)
+    + the .cublas sidecar (written before the sweep) for vs_cublas.  Same result
+    shape as _rank_matrix; ok=False (quietly) until the first correct combo lands."""
+    M, N, K = job["M"], job["N"], job["K"]
+    key = mc.shape_key(M, N, K)
+    cub = None
+    try:
+        cub = json.loads(pathlib.Path(str(job["jsonl"]) + ".cublas").read_text()).get(key)
+    except Exception:
+        pass
+    results = []
+    try:
+        with open(job["jsonl"]) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue          # half-written trailing line — skip
+                if not e.get("correct"):
+                    continue
+                p = (e.get("perf") or {}).get(key)
+                if not (p and p.get("tflops")):
+                    continue
+                tf = p["tflops"]
+                results.append({**{kk: e.get(kk) for kk in ("tier", "bm", "bn", "bk", "ns",
+                                                             "gsm", "nw", "tma_store", "persistent")},
+                                "ld_width": e.get("ld_width", 8), "overlap": e.get("overlap", 0),
+                                "split_epilogue": e.get("split_epilogue", 0),
+                                "tflops": tf, "rel_err": p.get("rel_err"),
+                                "vs_cublas": (tf / cub) if cub else None})
+    except FileNotFoundError:
+        pass
+    results.sort(key=lambda r: r["tflops"], reverse=True)
+    return {"ok": bool(results), "cublas_tflops": cub, "results": results,
+            "n_combos": len(results), "error": None}
 
 
 def autotune_collect(job) -> dict:
