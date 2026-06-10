@@ -49,11 +49,14 @@ SCRATCH = WEBUI / "tests" / "_scratch" / "gpu_driver"
 
 # Steady-state benchmark window for the sweep (kernels AND the cuBLAS reference).
 # do_bench's 20ms-warmup default measures partly clock-boosted, so a fresh/idle
-# B200 reports inflated TFLOPS; 1000ms settles clocks to steady state and makes
-# the autotune ratio match the per-config "Benchmark this config" path (which
-# already uses 1000/1000).  Override via env for a quicker, less accurate sweep.
-BENCH_WARMUP_MS = int(os.environ.get("MMCOMPOSER_BENCH_WARMUP_MS", "1000"))
-BENCH_REP_MS    = int(os.environ.get("MMCOMPOSER_BENCH_REP_MS", "1000"))
+# B200 reports inflated TFLOPS (8192^3 cuBLAS: 1558 at 20/200 vs ~1335 settled).
+# Measured sweep across windows: clocks settle by ~250ms warmup, and 500/500 is
+# statistically identical to 1000/1000 (~1335 +/-<1%) at half the wall-clock
+# (~1s/combo).  100/100 is too noisy (rep too short).  So 500/500 is the sweet
+# spot for a sweep — it agrees with the per-config worker (1000/1000) within
+# <1%.  Override via env for a quicker (less accurate) or stricter sweep.
+BENCH_WARMUP_MS = int(os.environ.get("MMCOMPOSER_BENCH_WARMUP_MS", "500"))
+BENCH_REP_MS    = int(os.environ.get("MMCOMPOSER_BENCH_REP_MS", "500"))
 
 
 def all_combos(tier_dirs, bn_opts=None):
