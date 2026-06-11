@@ -221,16 +221,17 @@ else:
     st.success("✅ Configuration passes all static constraint checks.")
     # Empirical ground truth from the committed B200 compatibility matrix.
     try:
+        two_cta_k = int(tier["cluster"])   # recorded compat knob (shared-dir discriminator)
         status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw,
                                           tma_store=tma_store, persistent=persistent,
                                           ld_width=ld_width, overlap=overlap,
-                                          split_epilogue=split_epilogue)
+                                          split_epilogue=split_epilogue, two_cta=two_cta_k)
         if status == "verified":
             # Prefer perf at the shape the user is tuning; else the largest swept square.
             em, en, ek = shapes[0]
             p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, em, en, ek,
                                tma_store=tma_store, persistent=persistent, ld_width=ld_width,
-                               overlap=overlap, split_epilogue=split_epilogue)
+                               overlap=overlap, split_epilogue=split_epilogue, two_cta=two_cta_k)
             ref = (em, en, ek)
             if not (p and p.get("tflops")):
                 squares = [t for t in mc.perf_shapes() if t[0] == t[1] == t[2]]
@@ -238,7 +239,7 @@ else:
                     ref = max(squares)
                     p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, *ref,
                                        tma_store=tma_store, persistent=persistent, ld_width=ld_width,
-                                       overlap=overlap, split_epilogue=split_epilogue)
+                                       overlap=overlap, split_epilogue=split_epilogue, two_cta=two_cta_k)
             msg = f"✅ Empirically verified on B200 ({cm.get('arch', 'sm_100a')}): compiles, runs, correct."
             if p and p.get("tflops"):
                 lbl = f"{ref[0]}³" if ref[0] == ref[1] == ref[2] else f"{ref[0]}×{ref[1]}×{ref[2]}"
@@ -373,8 +374,11 @@ with tab_bench:
         # see knobs.  Warp-spec-on = the knob combos with warp specialization
         # enabled (the practical production set); full also sweeps the
         # warp-spec-off combos kept for education.
-        WS_DIRS  = [t["dir"] for k, t in mc.TIER_MAP.items() if t and k[0]]  # k = (ms_ws, two_cta)
-        ALL_DIRS = [t["dir"] for t in mc.TIER_MAP.values() if t]
+        # The two warp-spec arms share one dir (TWO_CTA distinguishes them); the
+        # sweep expands each dir to all its arms, so pass each dir once.
+        WS_DIRS  = list(dict.fromkeys(
+            t["dir"] for k, t in mc.TIER_MAP.items() if t and k[0]))  # k = (ms_ws, two_cta)
+        ALL_DIRS = list(dict.fromkeys(t["dir"] for t in mc.TIER_MAP.values() if t))
         st.markdown("**🔧 Autotune** — sweep valid knob combinations on a B200 for this shape and rank by TFLOPS.")
         scope = st.radio(
             "Sweep scope",
@@ -390,15 +394,18 @@ with tab_bench:
         at_sig = (tuple(at_dirs), tuple(at_bn or []), m0, n0, k0)
         at_cache = st.session_state.setdefault("autotune_cache", {})
 
-        def _knob_cols(tier_dir):
-            ws, cta = mc.toggles_for_dir(tier_dir)
+        def _knob_cols(row):
+            # Warp-spec is on for any non-baseline dir; 2-CTA is the recorded
+            # two_cta knob (the two warp-spec arms share a dir).
+            ws, _ = mc.toggles_for_dir(row["tier"])
+            cta = bool(row.get("two_cta", 0))
             return ("On" if ws else "Off", "On" if cta else "Off")
 
         def _render_leaderboard(at, *, live):
             """Best-line + ranked table.  live=True: 'best so far' + fixed top-10
             (re-rendered each poll); live=False: final result + a top-N slider."""
             b = at["results"][0]
-            bws, bcta = _knob_cols(b["tier"])
+            bws, bcta = _knob_cols(b)
             vs_b = f"{b['vs_cublas']:.0%}" if b.get("vs_cublas") else "—"
             cub = f"{at['cublas_tflops']:.0f}" if at.get("cublas_tflops") else "?"
             head = (f"📈 **Best so far** ({at['n_combos']} done)" if live
@@ -418,7 +425,7 @@ with tab_bench:
                                   value=min(10, n_res), key="autotune_topn") if n_res > 3 else n_res
             rows = []
             for i, r in enumerate(at["results"][:top_n]):
-                ws, cta = _knob_cols(r["tier"])
+                ws, cta = _knob_cols(r)
                 rows.append({"#": i + 1, "Warp-spec": ws, "2-CTA": cta,
                              "BN": r["bn"], "NS": r["ns"], "GSM": r["gsm"], "NW": r["nw"],
                              "TMA": r["tma_store"], "PERS": r["persistent"],
@@ -488,7 +495,8 @@ with tab_bench:
         try:
             p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m, n, k,
                                tma_store=tma_store, persistent=persistent, ld_width=ld_width,
-                               overlap=overlap, split_epilogue=split_epilogue)
+                               overlap=overlap, split_epilogue=split_epilogue,
+                               two_cta=int(tier["cluster"]))
             cub = mc.cublas_tflops(m, n, k)
         except Exception:
             p, cub = None, None

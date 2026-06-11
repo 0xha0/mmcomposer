@@ -131,6 +131,7 @@ def _rank_matrix(out_matrix, M, N, K) -> dict:
         if p and p.get("tflops"):
             results.append({**{k: e[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm",
                                                  "nw", "tma_store", "persistent")},
+                            "two_cta": e.get("two_cta", 0),
                             "ld_width": e.get("ld_width", 8), "overlap": e.get("overlap", 0),
                             "split_epilogue": e.get("split_epilogue", 0),
                             "tflops": p["tflops"], "vs_cublas": p.get("vs_cublas"),
@@ -228,6 +229,7 @@ def autotune_partial(job) -> dict:
                 tf = p["tflops"]
                 results.append({**{kk: e.get(kk) for kk in ("tier", "bm", "bn", "bk", "ns",
                                                              "gsm", "nw", "tma_store", "persistent")},
+                                "two_cta": e.get("two_cta", 0),
                                 "ld_width": e.get("ld_width", 8), "overlap": e.get("overlap", 0),
                                 "split_epilogue": e.get("split_epilogue", 0),
                                 "tflops": tf, "rel_err": p.get("rel_err"),

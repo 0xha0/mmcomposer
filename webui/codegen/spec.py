@@ -16,6 +16,7 @@ from .fragments import KERNELS_DIR
 REQUIRED_KNOBS = (
     "BM", "BN", "BK", "NS", "GROUP_SIZE_M", "NUM_WARPS",
     "TMA_STORE", "TCGEN05_LD_WIDTH", "EPILOGUE_OVERLAP", "EPILOGUE_SPLIT",
+    "TWO_CTA",
 )
 
 

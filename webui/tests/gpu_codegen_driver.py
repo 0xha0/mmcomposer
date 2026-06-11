@@ -15,7 +15,7 @@ validator isn't rejecting things that actually work).
 
 Usage (from repo root, on a GPU node):
     srun ... python webui/tests/gpu_codegen_driver.py [--shape 2048] \
-        [--tiers tier1_baseline,tier2_multistage_ws,tier3_cluster_swizzle] \
+        [--tiers tier1_baseline,tier3_cluster_swizzle] \
         [--invalid-sample 12] [--json out.json]
 
 Results are printed as a table and (optionally) written as JSON.
@@ -71,9 +71,15 @@ def all_combos(tier_dirs, bn_opts=None):
     """
     bn_list = bn_opts if bn_opts else mc.BN_OPTS
     ld_list = mc.TCGEN05_LD_WIDTH_OPTS
-    dir_to_key = {t["dir"]: k for k, t in mc.TIER_MAP.items() if t}
-    for tdir in tier_dirs:
-        key = dir_to_key[tdir]
+    # A skeleton dir may back >1 tier: the warp-spec single-CTA and 2-CTA
+    # cluster tiers share one dir, distinguished by the TWO_CTA knob.  Sweep
+    # every (ms_ws, two_cta) arm registered for each requested dir.
+    keys_for_dir = {}
+    for _key, t in mc.TIER_MAP.items():
+        if t:
+            keys_for_dir.setdefault(t["dir"], []).append(_key)
+    tier_keys = [k for tdir in tier_dirs for k in keys_for_dir[tdir]]
+    for key in tier_keys:
         tier = mc.TIER_MAP[key]
         # PERSISTENT is a launch knob (same cubin) — only the persistent-
         # capable tiers get the grid=#SMs variant; others stay at [0].
@@ -153,7 +159,9 @@ def launch_spec(tier, k, M, N, K, num_sms=None):
 def tag_for(tier, k):
     # ld_width changes the cubin (epilogue constexpr), so it's in the tag;
     # persistent does NOT (launch-only, same cubin) so it stays out.
-    return (f"{tier['dir']}_bm{k['bm']}_bn{k['bn']}_bk{k['bk']}"
+    # two_cta (cluster) changes the cubin and shares the dir with the single-CTA
+    # arm, so it must be in the tag or the two arms clobber each other's cubin.
+    return (f"{tier['dir']}_tc{int(tier['cluster'])}_bm{k['bm']}_bn{k['bn']}_bk{k['bk']}"
             f"_ns{k['ns']}_gsm{k['gsm']}_nw{k['nw']}_ts{k['tma_store']}"
             f"_ld{k.get('ld_width', 8)}_ov{k.get('overlap', 0)}"
             f"_sp{k.get('split_epilogue', 0)}")
@@ -198,8 +206,8 @@ def launch_from_cubin(tier, k, arch, shapes, do_bench=True, num_sms=None):
     {rel_err, correct, us, tflops}."""
     src_path = str(SCRATCH / tag_for(tier, k) / "kernel.cu")
     cubin_path = src_path[:-3] + f"_{arch}.cubin"
-    res = {"tier": tier["dir"], **k, "launched": False, "correct": False,
-           "error": None, "perf": {}}
+    res = {"tier": tier["dir"], "two_cta": int(tier["cluster"]), **k,
+           "launched": False, "correct": False, "error": None, "perf": {}}
     mod = None
     try:
         with open(cubin_path, "rb") as f:
@@ -321,7 +329,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--perf-shapes", default="4096,8192",
                     help="comma-separated square shapes (M=N=K) to check + benchmark")
-    ap.add_argument("--tiers", default="tier1_baseline,tier2_multistage_ws,tier3_cluster_swizzle")
+    # tier3_cluster_swizzle backs BOTH warp-spec arms (single-CTA + 2-CTA) via
+    # the TWO_CTA knob; the sweep expands it to both arms automatically.
+    ap.add_argument("--tiers", default="tier1_baseline,tier3_cluster_swizzle")
     ap.add_argument("--invalid-sample", type=int, default=12)
     ap.add_argument("--bn", default=None,
                     help="comma-separated BN values to sweep (default: all BN_OPTS). "
@@ -471,14 +481,23 @@ def main():
     for (M, N, K) in shape_list:
         key = mc.shape_key(M, N, K)
         print(f"cuBLAS {key}: {cublas_tflops[key]:.0f} TFLOPS")
-        for tdir in tier_dirs:
-            cand = [r for r in ordered if r["tier"] == tdir and r["validator"] == "valid"
+        # Group by (dir, two_cta): the two warp-spec arms share a dir but are
+        # distinct kernels, so report each arm's best separately.
+        seen_arms = []
+        for r in ordered:
+            arm = (r["tier"], r.get("two_cta", 0))
+            if r["tier"] in tier_dirs and arm not in seen_arms:
+                seen_arms.append(arm)
+        for (tdir, tc) in seen_arms:
+            cand = [r for r in ordered if r["tier"] == tdir and r.get("two_cta", 0) == tc
+                    and r["validator"] == "valid"
                     and r.get("perf", {}).get(key, {}).get("tflops")]
             if cand:
                 best = max(cand, key=lambda r: r["perf"][key]["tflops"])
                 tf = best["perf"][key]["tflops"]
                 ratio = tf / cublas_tflops[key]
-                print(f"  best {tdir:24}: {tf:.0f} TFLOPS ({ratio:.0%} cuBLAS)  "
+                label = f"{tdir}{' (2-CTA)' if tc else ' (1-CTA)'}"
+                print(f"  best {label:32}: {tf:.0f} TFLOPS ({ratio:.0%} cuBLAS)  "
                       f"bn{best['bn']} ns{best['ns']} gsm{best['gsm']} nw{best['nw']} "
                       f"ts{best.get('tma_store',0)} pers{best.get('persistent',0)}")
 
@@ -502,7 +521,8 @@ def main():
             }
         entries.append({k: r[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw",
                                            "tma_store", "persistent")}
-                       | {"ld_width": r.get("ld_width", 8), "overlap": r.get("overlap", 0),
+                       | {"two_cta": r.get("two_cta", 0),
+                          "ld_width": r.get("ld_width", 8), "overlap": r.get("overlap", 0),
                           "split_epilogue": r.get("split_epilogue", 0),
                           "correct": bool(r["correct"]), "perf": perf})
     matrix = {

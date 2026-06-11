@@ -26,8 +26,9 @@ PERSISTENT   = 0
 TCGEN05_LD_WIDTH = 8
 EPILOGUE_OVERLAP = 0
 EPILOGUE_SPLIT = 0
+TWO_CTA      = 1            # 1 = 2-CTA cluster MMA; 0 = single-CTA (grid/SMEM degenerate)
 
-CTA_GROUP    = 2
+CTA_GROUP    = 2 if TWO_CTA else 1
 BN_LOCAL     = BN // CTA_GROUP
 ELEM_BYTES   = 2
 # Overlap uses two stream warps in warpgroup 0 plus NUM_WARPS epilogue

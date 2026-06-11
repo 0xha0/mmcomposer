@@ -277,33 +277,10 @@ __device__ __forceinline__ void matmul_cluster_impl(
     int cta_rank;
     asm volatile("mov.b32 %0, %%cluster_ctarank;" : "=r"(cta_rank));
 
-    const int cluster_id      = blockIdx.x / CTA_GROUP;
-    const int grid_n          = N / BN;
-    const int grid_m_clusters = M / (CTA_GROUP * BM);
-
-    // ── Triton-style chunked walk in (cluster_m, cluster_n) ─────────
-    //
-    // Re-pack the grid so consecutive CTAs share a B-stripe (the
-    // expensive thing to stream) instead of an A-stripe.  Within each
-    // group of GROUP_SIZE_M × grid_n cluster IDs, walk M fast and N
-    // slow; advance to the next group when the previous one is done.
-    //
-    // GSM = 1 reproduces ch08's N-fast walk exactly (verify: with
-    // GSM=1, gsm=1, cluster_m = cluster_id / grid_n,
-    //                cluster_n = cluster_id % grid_n).
-    const int num_cluster_in_group = GROUP_SIZE_M * grid_n;
-    const int group_id             = cluster_id / num_cluster_in_group;
-    const int first_cluster_m      = group_id * GROUP_SIZE_M;
-    // gsm shrinks for the (possibly ragged) last group so we stay
-    // inside the M-grid: min(remaining cluster-rows, GROUP_SIZE_M).
-    const int gsm        = min(grid_m_clusters - first_cluster_m, GROUP_SIZE_M);
-    const int cluster_m  = first_cluster_m + (cluster_id % gsm);
-    const int cluster_n  = (cluster_id % num_cluster_in_group) / gsm;
-
-    const int off_m_cluster = cluster_m * (CTA_GROUP * BM);    // cluster M-base
-    const int off_n         = cluster_n * BN;                  // shared by both CTAs
-    const int off_m_local   = off_m_cluster + cta_rank * BM;
-    const int off_n_local   = off_n + cta_rank * BN_LOCAL;     // each CTA owns BN/2 cols
+    // Tile coords (the GSM chunked-walk swizzle) are computed PER-TILE
+    // inside each path's persistent loop below — both the overlap and the
+    // non-overlap branch derive (cluster_m, cluster_n) from their own
+    // cluster id, so there are no tile-specific coords at this scope.
 
     // ── SMEM (per CTA — B is now half-width) ────────────────────────
     extern __shared__ __align__(1024) char smem[];

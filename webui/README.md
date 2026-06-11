@@ -65,9 +65,9 @@ webui/
     _runtime.py          # vendored cuda-python plumbing (inlined into host downloads)
     _epilogue.cu.frag    # shared epilogue, stitched into every tier at // @@EPILOGUE@@
     compat_matrix.json   # committed B200 ground-truth (correctness + perf)
-    tier1_baseline/        { kernel.cu, launcher.py }
-    tier2_multistage_ws/   { kernel.cu, launcher.py }
-    tier3_cluster_swizzle/ { kernel.cu, launcher.py }
+    tier1_baseline/        { kernel.cu, launcher.py }   # no warp-spec (synchronous MMA)
+    tier3_cluster_swizzle/ { kernel.cu, launcher.py }   # unified warp-spec skeleton;
+                                                        # TWO_CTA knob = single-CTA / 2-CTA cluster
   tests/
     gpu_codegen_driver.py # B200 sweep: render→compile→run→bench every combo; emits compat_matrix
     host_artifact_test.py # runs the actual downloaded host.py end-to-end per tier

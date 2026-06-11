@@ -128,8 +128,10 @@ TIER_MAP = {
         "label":   "Tier 2 — Multi-stage + warp specialization",
         "desc":    "Multi-stage ring + dedicated TMA + MMA warps (async), single-CTA, "
                    "CTA-swizzle tunable.",
-        "dir":     "tier2_multistage_ws",
-        "symbol":  "matmul_coalesced_epilogue",
+        # Unified warp-spec skeleton (shared with the 2-CTA tier); the cluster
+        # vs single-CTA difference is the TWO_CTA knob (= cluster here -> 0).
+        "dir":     "tier3_cluster_swizzle",
+        "symbol":  "matmul_cluster",
         "cluster": False,
         "persistent_ok": True,    # persistent-capable tile loop (Step A)
     },
@@ -187,20 +189,15 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
                 f"(M % {cta_group * bm} = {M % (cta_group * bm)}).  Turn off the 2-CTA cluster for this M."
             )
 
-    # Persistent is a launch-side knob, but only the warp-spec single-CTA path
-    # and the overlapped cluster path have the tile loop needed to launch with
-    # grid < num_tiles.
+    # Persistent is a launch-side knob; it needs a CTA tile loop to launch
+    # with grid < num_tiles.  Both warp-spec paths now have one (the merged
+    # skeleton's non-overlap path is persistent for single-CTA AND 2-CTA —
+    # TWO_CTA and EPILOGUE_OVERLAP are independent of PERSISTENT).
     if persistent and not persistent_ok:
         out.append(
             "**Persistent grid** is only available on warp-specialized paths; "
             "other knob combinations have no CTA tile loop, "
             "so grid = #SMs would leave most output tiles uncomputed."
-        )
-    if persistent and cluster and not overlap:
-        out.append(
-            "**Persistent grid** on the 2-CTA cluster path currently requires "
-            "**Epilogue overlap**.  The non-overlap cluster skeleton still uses "
-            "one cluster per output tile."
         )
 
     # Epilogue overlap (Step B): a persistent pipeline with the 2 stream warps
@@ -419,22 +416,26 @@ def load_compat() -> dict:
 
 @functools.lru_cache(maxsize=1)
 def _compat_index() -> dict:
-    """(tier_dir, bm, bn, bk, ns, gsm, nw, tma_store, persistent, ld_width) -> entry."""
+    """(tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store, persistent,
+    ld_width, overlap, split_epilogue) -> entry.
+
+    two_cta is part of the key because the warp-spec single-CTA and 2-CTA
+    cluster tiers share one ``tier`` dir, distinguished only by that knob."""
     idx = {}
     for e in load_compat().get("entries", []):
-        idx[(e["tier"], e["bm"], e["bn"], e["bk"], e["ns"], e["gsm"], e["nw"],
-             e.get("tma_store", 0), e.get("persistent", 0), e.get("ld_width", 8),
-             e.get("overlap", 0), e.get("split_epilogue", 0))] = e
+        idx[(e["tier"], e.get("two_cta", 0), e["bm"], e["bn"], e["bk"], e["ns"],
+             e["gsm"], e["nw"], e.get("tma_store", 0), e.get("persistent", 0),
+             e.get("ld_width", 8), e.get("overlap", 0), e.get("split_epilogue", 0))] = e
     return idx
 
 
 def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0,
-                  ld_width=8, overlap=0, split_epilogue=0):
+                  ld_width=8, overlap=0, split_epilogue=0, two_cta=0):
     """Return ('verified'|'failed'|'unknown', entry|None) for a combo.
 
     'verified'/'failed' come from the empirical B200 sweep; 'unknown'
     means the combo wasn't in the swept grid (fall back to static)."""
-    e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw, tma_store,
+    e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store,
                              persistent, ld_width, overlap, split_epilogue))
     if e is None:
         return "unknown", None
@@ -448,10 +449,10 @@ def shape_key(M, N, K):
 
 
 def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, M, N, K, tma_store=0,
-                persistent=0, ld_width=8, overlap=0, split_epilogue=0):
+                persistent=0, ld_width=8, overlap=0, split_epilogue=0, two_cta=0):
     """Return the measured {rel_err, tflops, vs_cublas} for this combo at
     shape (M, N, K), or None if not in the matrix."""
-    e = _compat_index().get((tier_dir, bm, bn, bk, ns, gsm, nw, tma_store,
+    e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store,
                              persistent, ld_width, overlap, split_epilogue))
     if e is None:
         return None
@@ -498,7 +499,10 @@ def recommended_config(shape=None):
             best, best_tf = e, tf
     if best is None:
         return None
-    ms_ws, two_cta = toggles_for_dir(best["tier"])
+    # two_cta is a recorded knob now (the two warp-spec arms share a dir), so
+    # take it from the entry; the dir only tells us whether warp-spec is on.
+    ms_ws, _ = toggles_for_dir(best["tier"])
+    two_cta = best.get("two_cta", 0)
     knobs = {k: best[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw", "tma_store")}
     knobs["persistent"] = best.get("persistent", 0)
     knobs["ld_width"] = best.get("ld_width", 8)
