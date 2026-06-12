@@ -62,7 +62,8 @@ _rec = mc.recommended_config() or {}
 def _idx(opts, key, fallback):
     v = _rec.get(key)
     return opts.index(v) if v in opts else fallback
-_onoff = lambda key: 1 if _rec.get(key) else 0
+def _default_on(key):
+    return bool(_rec.get(key))
 
 with st.sidebar:
     st.header("Kernel configuration")
@@ -98,51 +99,45 @@ with st.sidebar:
                       help="Warps per CTA.  The epilogue splits warps as a 2D grid: BM/32 row strips × "
                            "NW/(BM/32) column groups, so NW must be a multiple of BM/32 (= 4 at BM=128).")
 
-    ms_ws = st.selectbox(
-        "Multi-staging + warp specialization", mc.ONOFF_OPTS, index=_onoff("ms_ws"),
+    ms_ws = st.toggle(
+        "Multi-staging + warp specialization", value=_default_on("ms_ws"),
         help="Dedicated TMA + MMA warps (async producer/consumer) on top of the "
-             "multi-stage ring.  Off = synchronous MMA (no producer/consumer split).") == "On"
-    two_cta = st.selectbox(
-        "2-CTA cluster MMA", mc.ONOFF_OPTS, index=_onoff("two_cta"),
+             "multi-stage ring.  Off = synchronous MMA (no producer/consumer split).")
+    two_cta = st.toggle(
+        "2-CTA cluster MMA", value=_default_on("two_cta"),
         help="`__cluster_dims__(2,1,1)` + `cta_group::2`: two CTAs cooperate in one "
              "tcgen05.mma (half-B per CTA, doubles M per MMA).  Requires "
-             "multi-staging + warp specialization (above).") == "On"
-    persistent = st.selectbox(
-        "Persistent grid", mc.ONOFF_OPTS, index=_onoff("persistent"),
+             "multi-staging + warp specialization (above).")
+    persistent = st.toggle(
+        "Persistent grid", value=_default_on("persistent"),
         help="Launch one CTA per SM and loop over output tiles inside the "
              "kernel (grid = #SMs) instead of one CTA per tile.  Trims "
              "launch/tail overhead — config-dependent (a clear win on low-K / "
              "many-tile shapes).  Available on the warp-specialized single-CTA "
-             "path, and on the 2-CTA cluster path when epilogue overlap is on.") == "On"
-    ld_width = st.selectbox(
-        "Epilogue tcgen05.ld width", mc.TCGEN05_LD_WIDTH_OPTS,
-        index=_idx(mc.TCGEN05_LD_WIDTH_OPTS, "ld_width", 0),
-        help="32-bit elements per lane per TMEM→register load in the epilogue "
-             "(.32x32b.xN).  Wider = fewer loads + fewer wait_ld syncs (more "
-             "registers — essentially free while SMEM-occupancy-bound).  Must "
-             "divide the per-warp column span; may help the epilogue.")
-    overlap = st.selectbox(
-        "Epilogue overlap (persistent)", mc.ONOFF_OPTS, index=_onoff("overlap"),
+             "path, and on the 2-CTA cluster path when epilogue overlap is on.")
+    ld_width = mc.TCGEN05_LD_WIDTH_OPTS[0]
+    overlap = st.toggle(
+        "Epilogue overlap (persistent)", value=_default_on("overlap"),
         help="Run each tile's epilogue concurrently with the next tile's K-loop "
              "(TMEM double-buffer).  Launches 2 stream warps (TMA + MMA) on top of "
              "num_warps epilogue warps, so num_warps scales the epilogue.  A win on "
-             "epilogue-bound low-K shapes.  Requires Persistent grid on.") == "On"
-    split_epilogue = st.selectbox(
-        "Split epilogue writeback", mc.ONOFF_OPTS, index=_onoff("split_epilogue"),
+             "epilogue-bound low-K shapes.  Requires Persistent grid on.")
+    split_epilogue = st.toggle(
+        "Split epilogue writeback", value=_default_on("split_epilogue"),
         help="For Tier 3 overlap, stage/store the epilogue in two half-BN column "
              "passes.  This reduces epilogue SMEM and can allow a deeper K-loop "
-             "ring, but adds an extra epilogue pass/barrier.") == "On"
-    tma_pipelined = st.selectbox(
-        "Pipelined TMA-store epilogue", mc.ONOFF_OPTS, index=_onoff("tma_pipelined"),
+             "ring, but adds an extra epilogue pass/barrier.")
+    tma_pipelined = st.toggle(
+        "Pipelined TMA-store epilogue", value=_default_on("tma_pipelined"),
         help="Alternative overlapped epilogue mode: drain TMEM in 64-column chunks "
              "through two compact swizzled SMEM buffers and issue TMA stores.  "
              "Requires Persistent grid + Epilogue overlap, and replaces split/L1 "
-             "staged-store modifiers.") == "On"
-    l1_no_alloc = st.selectbox(
-        "L1 no-allocate C store", mc.ONOFF_OPTS, index=_onoff("l1_no_alloc"),
+             "staged-store modifiers.")
+    l1_no_alloc = st.toggle(
+        "L1 no-allocate C store", value=_default_on("l1_no_alloc"),
         help="Write the C output with `st...L1::no_allocate` so the write-once "
              "result doesn't evict A/B from L1.  A measured win when the epilogue "
-             "is exposed (low K), null at high K.") == "On"
+             "is exposed (low K), null at high K.")
 
     st.subheader("Problem shape")
     shapes_text = st.text_area(
@@ -428,7 +423,7 @@ with tab_bench:
                 f"{cub}) — Warp-spec={bws} · 2-CTA cluster={bcta} · "
                 f"BN={b['bn']} NS={b['ns']} GSM={b['gsm']} NW={b['nw']} "
                 f"PERSISTENT={b['persistent']} "
-                f"LD_WIDTH={b.get('ld_width', 8)} OVERLAP={b.get('overlap', 0)} "
+                f"OVERLAP={b.get('overlap', 0)} "
                 f"SPLIT={b.get('split_epilogue', 0)} L1NA={b.get('l1_no_alloc', 0)} "
                 f"TMA_PIPE={b.get('tma_pipelined', 0)}")
             n_res = len(at["results"])
@@ -443,7 +438,7 @@ with tab_bench:
                 rows.append({"#": i + 1, "Warp-spec": ws, "2-CTA": cta,
                              "BN": r["bn"], "NS": r["ns"], "GSM": r["gsm"], "NW": r["nw"],
                              "PERS": r["persistent"],
-                             "LD": r.get("ld_width", 8), "OV": r.get("overlap", 0),
+                             "OV": r.get("overlap", 0),
                              "SPLIT": r.get("split_epilogue", 0), "L1NA": r.get("l1_no_alloc", 0),
                              "TMA": r.get("tma_pipelined", 0),
                              "TFLOPS": f"{r['tflops']:.0f}",

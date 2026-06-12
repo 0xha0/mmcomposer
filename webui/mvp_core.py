@@ -105,8 +105,8 @@ EPILOGUE_L1_NO_ALLOC_OPTS = [0, 1]
 # subsequent epilogue chunks / tiles.  It is mutually exclusive with the staged
 # int4 modifiers (split writeback and L1 no-allocate).
 EPILOGUE_TMA_PIPELINED_OPTS = [0, 1]
-# On/off knobs are presented as dropdowns too, for a uniform UI (and to
-# leave room for an "Auto" value once auto-tuning lands).
+# Shared on/off labels for non-Streamlit callers.  The main Streamlit UI
+# presents these binary knobs as toggles.
 ONOFF_OPTS = ["Off", "On"]
 
 GPU_OPTS   = ["B200 (sm_100a)", "H100 (sm_90a) — coming soon", "RTX 50xx (sm_120) — coming soon"]
