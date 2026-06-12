@@ -82,8 +82,8 @@ def main() -> int:
     print(f"Top {len(rows)} of {res['n_combos']} valid combos at {M}x{N}x{K}, by TFLOPS:\n")
 
     hdr = (f"{'#':>2}  {'TFLOPS':>7}  {'%cuBLAS':>7}  {'WS':>3} {'2CTA':>4}  "
-           f"{'BN':>3} {'NS':>2} {'GSM':>3} {'NW':>2}  {'TMA':>3} {'PERS':>4} "
-           f"{'LDW':>3} {'OV':>2} {'SPLIT':>5}")
+           f"{'BN':>3} {'NS':>2} {'GSM':>3} {'NW':>2}  {'PERS':>4} "
+           f"{'LDW':>3} {'OV':>2} {'SPLIT':>5} {'L1NA':>4}")
     print(hdr)
     print("-" * len(hdr))
     for i, r in enumerate(rows, 1):
@@ -92,8 +92,8 @@ def main() -> int:
         vsc = f"{r['vs_cublas'] * 100:.0f}%" if r.get("vs_cublas") else "-"
         print(f"{i:>2}  {r['tflops']:>7.0f}  {vsc:>7}  {ws:>3} {cta:>4}  "
               f"{r['bn']:>3} {r['ns']:>2} {r['gsm']:>3} {r['nw']:>2}  "
-              f"{r['tma_store']:>3} {r['persistent']:>4} {r.get('ld_width', 8):>3} "
-              f"{r.get('overlap', 0):>2} {r.get('split_epilogue', 0):>5}")
+              f"{r['persistent']:>4} {r.get('ld_width', 8):>3} "
+              f"{r.get('overlap', 0):>2} {r.get('split_epilogue', 0):>5} {r.get('l1_no_alloc', 0):>4}")
     return 0
 
 

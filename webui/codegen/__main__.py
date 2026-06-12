@@ -5,7 +5,7 @@
 
 config.json is a flat object of the selected option values, e.g.
     {"skeleton": "tier3_cluster_swizzle", "BM": 128, "BN": 256, "BK": 64,
-     "NS": 5, "GROUP_SIZE_M": 4, "NUM_WARPS": 8, "TMA_STORE": 0,
+     "NS": 5, "GROUP_SIZE_M": 4, "NUM_WARPS": 8,
      "TCGEN05_LD_WIDTH": 8, "EPILOGUE_OVERLAP": 1, "EPILOGUE_SPLIT": 1,
      "label": "Tier 3 — + 2-CTA cluster MMA"}
 """

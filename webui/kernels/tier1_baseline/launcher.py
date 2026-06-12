@@ -21,13 +21,11 @@ BM, BN, BK   = 128, 256, 64
 NS           = 2
 GROUP_SIZE_M = 8
 NUM_WARPS    = 4
-TMA_STORE    = 0
 
 ELEM_BYTES   = 2
 THREADS      = NUM_WARPS * 32
 SLOT_BYTES   = BM * BK * ELEM_BYTES + BN * BK * ELEM_BYTES
-# TMA store needs a dense BM×BN staging buffer; the int4 path pads to BN+8.
-EPI_BYTES    = BM * (BN if TMA_STORE else BN + 8) * ELEM_BYTES
+EPI_BYTES    = BM * (BN + 8) * ELEM_BYTES
 # K-loop ring (NS slots) and epilogue staging share the same dynamic
 # SMEM region but are time-disjoint — alloc the max of the two.
 SHARED_BYTES = max(NS * SLOT_BYTES, EPI_BYTES) + 1024

@@ -20,7 +20,7 @@ def main():
     ap.add_argument("--persistent", type=int, default=0)
     ap.add_argument("--overlap", type=int, default=0)
     ap.add_argument("--split_epilogue", type=int, default=0)
-    for k in ("bm", "bn", "bk", "ns", "nw", "tma_store"):
+    for k in ("bm", "bn", "bk", "ns", "nw"):
         ap.add_argument(f"--{k}", type=int, required=True)
     ap.add_argument("-M", type=int, required=True)
     ap.add_argument("-N", type=int, required=True)
@@ -44,10 +44,10 @@ def main():
         cta_group = 2 if a.cluster else 1
         bn_local = a.bn // cta_group
         slot = a.bm * a.bk * 2 + bn_local * a.bk * 2
-        if a.overlap and a.cluster and a.split_epilogue and not a.tma_store:
+        if a.overlap and a.cluster and a.split_epilogue:
             epi = a.bm * (a.bn // 2 + 8) * 2
         else:
-            epi = a.bm * (a.bn if a.tma_store else a.bn + 8) * 2
+            epi = a.bm * (a.bn + 8) * 2
         shared = (a.ns * slot + epi if a.overlap else max(a.ns * slot, epi)) + 1024
         block = ((a.nw + 4) * 32 if a.overlap else a.nw * 32, 1, 1)
         if a.persistent:

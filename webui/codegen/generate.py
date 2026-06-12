@@ -60,7 +60,7 @@ def generate_host(config: dict) -> str:
         f"Tier: {config['label']}\n"
         f"Config: BM={config['BM']} BN={config['BN']} BK={config['BK']} "
         f"NS={config['NS']} GROUP_SIZE_M={config['GROUP_SIZE_M']} "
-        f"NUM_WARPS={config['NUM_WARPS']} TMA_STORE={config['TMA_STORE']} "
+        f"NUM_WARPS={config['NUM_WARPS']} "
         f"PERSISTENT={config.get('PERSISTENT', 0)} "
         f"EPILOGUE_OVERLAP={config['EPILOGUE_OVERLAP']} "
         f"EPILOGUE_SPLIT={config['EPILOGUE_SPLIT']}\n"

@@ -8,13 +8,9 @@
     //   EPI_DEALLOC(taddr, n)            — that tier's tcgen05 dealloc
     //       (single-CTA: tcgen05_dealloc; cluster: tcgen05_dealloc_g2)
     //
-    // TMA_STORE (0/1) picks Phase 2: a flat int4 store loop, or one async
-    // TMA store per CTA.  The TMA store needs a tightly-packed SMEM source
-    // (no +8 bank-pad), so EPI_LD switches accordingly.
-    //
     // EPILOGUE_L1_NO_ALLOC (knob): write-once C store bypasses L1 allocation so
     // it doesn't evict A/B from L1.  Win when the epilogue is exposed (low K),
-    // null at high K — a sweep knob.  (int4 store path only; TMA store unaffected.)
+    // null at high K — a sweep knob.
 #if EPILOGUE_L1_NO_ALLOC
 #define EPI_ST_I4(DST, VAL) do { int4 _v = (VAL); \
         asm volatile("st.relaxed.cta.global.L1::no_allocate.v4.b32 [%0], {%1,%2,%3,%4};" \
@@ -22,11 +18,7 @@
 #else
 #define EPI_ST_I4(DST, VAL) (*reinterpret_cast<int4*>(DST) = (VAL))
 #endif
-#if TMA_STORE
-    constexpr int EPI_LD = BN;
-#else
-    constexpr int EPI_LD = BN + 8;
-#endif
+    constexpr int EPI_LD = BN + 8;   // +8 bank-pad for the columnar Phase-1 stores
     auto C_sh = reinterpret_cast<__nv_bfloat16(*)[EPI_LD]>(smem);
 
     tcgen05_fence_after_thread_sync();
@@ -77,28 +69,8 @@
 
     const int out_m_base = off_m_cluster + cta_rank * BM;
 
-#if TMA_STORE
     {
-        // ── Phase 2a: one async TMA store per CTA ───────────────────
-        // Phase 1 wrote SMEM via the GENERIC proxy (st.shared); the TMA
-        // store engine reads via the ASYNC proxy — fence between them.
-        asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
-        if (warp_id == 0 && elect_sync()) {
-            tma_2d_store(C_tmap_ptr,
-                         (uint32_t)__cvta_generic_to_shared(&C_sh[0][0]),
-                         /*x=*/ off_n, /*y=*/ out_m_base);
-            tma_commit_group();
-            tma_wait_group<0>();   // drain before we touch TMEM
-        }
-        // dealloc must come AFTER the store drains — reversing it
-        // deadlocks the bulk-copy engine (bisected in ch13).
-        if (warp_id == 0 && elect_sync()) {
-            EPI_DEALLOC(taddr, BN);
-        }
-    }
-#else
-    {
-        // ── Phase 2b: flat thread-major coalesced int4 stores ───────
+        // ── Phase 2: flat thread-major coalesced int4 stores ────────
         if (warp_id == 0 && elect_sync()) {
             EPI_DEALLOC(taddr, BN);
         }
@@ -117,5 +89,4 @@
             EPI_ST_I4(&C_ptr[gr * N + gc], *reinterpret_cast<const int4*>(&C_sh[row][col]));
         }
     }
-#endif
 #undef EPI_ST_I4

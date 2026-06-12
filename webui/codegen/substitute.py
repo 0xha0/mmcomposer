@@ -32,7 +32,7 @@ def substitute_launcher_constants(src: str, **values) -> str:
             f"BM, BN, BK = {values['BM']}, {values['BN']}, {values['BK']}",
             src,
         )
-    for name in ("NS", "GROUP_SIZE_M", "NUM_WARPS", "TMA_STORE", "PERSISTENT",
+    for name in ("NS", "GROUP_SIZE_M", "NUM_WARPS", "PERSISTENT",
                  "TCGEN05_LD_WIDTH", "EPILOGUE_OVERLAP", "EPILOGUE_SPLIT", "TWO_CTA"):
         if name in values:
             src = re.sub(

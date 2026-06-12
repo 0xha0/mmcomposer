@@ -9,7 +9,6 @@ constexpr int BK           = 64;
 constexpr int NS           = 5;       // multi-stage SMEM ring depth
 constexpr int GROUP_SIZE_M = 4;       // CTA-swizzle chunk (1 = no swizzle)
 constexpr int NUM_WARPS    = 8;       // total warps per CTA
-constexpr int TMA_STORE    = 0;       // epilogue Phase 2: 0 = int4 stores, 1 = async TMA store
 constexpr int TCGEN05_LD_WIDTH = 8;  // TMEM->reg epilogue load width: 8 or 16 (32-bit elems per lane)
 constexpr int EPILOGUE_OVERLAP = 1;  // 1 = persistent 2-CTA cluster + epilogue/K-loop overlap
 constexpr int EPILOGUE_SPLIT   = 0;  // 1 = split overlapped int4 writeback into two half-BN passes

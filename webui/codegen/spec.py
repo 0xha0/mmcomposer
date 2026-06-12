@@ -15,7 +15,7 @@ from .fragments import KERNELS_DIR
 # conditions).  PERSISTENT is launcher-only but harmless to carry in config.
 REQUIRED_KNOBS = (
     "BM", "BN", "BK", "NS", "GROUP_SIZE_M", "NUM_WARPS",
-    "TMA_STORE", "TCGEN05_LD_WIDTH", "EPILOGUE_OVERLAP", "EPILOGUE_SPLIT",
+    "TCGEN05_LD_WIDTH", "EPILOGUE_OVERLAP", "EPILOGUE_SPLIT",
     "TWO_CTA", "EPILOGUE_L1_NO_ALLOC",
 )
 

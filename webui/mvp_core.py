@@ -74,9 +74,6 @@ NW_OPTS  = [4, 8, 16]
 # they only bloat the grid.  The x16 code path is kept (validator allows 8/16,
 # epilogue dispatch handles it) — re-add 16 here to sweep it again.
 TCGEN05_LD_WIDTH_OPTS = [8]
-# Epilogue Phase-2 store path: 0 = all-thread int4 stores; 1 = one async
-# TMA store per CTA (swizzled SMEM staging).  A universal toggle.
-TMA_STORE_OPTS = [0, 1]
 # Persistent grid: 0 = one CTA per output tile (grid = num_tiles); 1 = one
 # CTA per SM, each walking a strided run of tiles (grid = #SMs).  A host/
 # launch knob — same cubin both ways — wired on Tier 2 (a small reproducible
@@ -89,7 +86,7 @@ PERSISTENT_OPTS = [0, 1]
 # num_warps epilogue warps run in their own warpgroup(s) from warp 4 (warps 2,3
 # idle — tcgen05.ld epilogue warps must not share warpgroup 0 with the MMA warp),
 # so the block is (NW+4) warps and the epilogue scales with NW.  Requires
-# persistent on, int4 store (tma_store=0), and the disjoint-SMEM budget (NS
+# persistent on, int4 store, and the disjoint-SMEM budget (NS
 # small).  A win on epilogue-bound low-K shapes.  Tier 2 and Tier 3.
 EPILOGUE_OVERLAP_OPTS = [0, 1]
 # Split the overlapped Tier 3 int4 epilogue into two half-BN staging/store
@@ -100,7 +97,7 @@ EPILOGUE_SPLIT_OPTS = [0, 1]
 # Write the C output with `st...L1::no_allocate` so the streamed (write-once)
 # result doesn't evict A/B from L1.  Shape-dependent: a measured +3-6% when the
 # epilogue is exposed (low K) and null at high K — hence a sweep knob, not
-# always-on.  int4 store path only (no effect under TMA_STORE).
+# always-on.
 EPILOGUE_L1_NO_ALLOC_OPTS = [0, 1]
 # On/off knobs are presented as dropdowns too, for a uniform UI (and to
 # leave room for an "Auto" value once auto-tuning lands).
@@ -162,15 +159,13 @@ def tier_for(ms_ws: bool, two_cta: bool):
 
 # ── Validation ────────────────────────────────────────────────────────
 
-def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
+def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool,
                     persistent=0, persistent_ok=True, shape=None, ld_width=8,
                     overlap=0, split_epilogue=0, l1_no_alloc=0) -> list[str]:
     """Return a list of human-readable warnings; empty list = valid.
 
     ``cluster`` selects the 2-CTA geometry: each CTA owns BN/2 columns of
     B but still BM rows, so the per-CTA B SMEM slot is halved.
-    ``tma_store`` selects the epilogue Phase-2 store path (0 int4 / 1 TMA);
-    it changes the epilogue staging width (TMA needs a dense BM×BN buffer).
     ``persistent`` launches grid = #SMs with a CTA-level tile loop; it is
     only valid on tiers whose kernel actually has that loop (``persistent_ok``).
     """
@@ -215,9 +210,6 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
         if not persistent:
             out.append("**Epilogue overlap** requires **Persistent grid** on "
                        "(it's a persistent pipeline launched with grid = #SMs).")
-        if tma_store:
-            out.append("**Epilogue overlap** uses the int4 store path; turn off "
-                       "**TMA store epilogue**.")
 
     if split_epilogue:
         if not cluster:
@@ -225,18 +217,9 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
                        "the **2-CTA cluster MMA** path.")
         if not overlap:
             out.append("**Split epilogue writeback** requires **Epilogue overlap**.")
-        if tma_store:
-            out.append("**Split epilogue writeback** uses the int4 store path; "
-                       "turn off **TMA store epilogue**.")
         if bn % 2 != 0 or (bn // 2) % 8 != 0:
             out.append(f"**BN = {bn}** must split into two int4-aligned halves "
                        "for split epilogue writeback.")
-
-    # L1::no_allocate only affects the int4 C store; under the TMA store path it
-    # is inert, so reject it there (keeps it out of the swept grid as a no-op).
-    if l1_no_alloc and tma_store:
-        out.append("**L1 no-allocate store** applies only to the int4 store path; "
-                   "turn off **TMA store epilogue**.")
 
     if ns < 2:
         out.append(
@@ -335,11 +318,10 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
     slot     = a_slot + b_slot
     # Tier 3 split writeback stages one half-BN column panel at a time, reducing
     # epilogue SMEM enough to try deeper rings such as NS=5 at BN=256.
-    if overlap and cluster and split_epilogue and not tma_store:
+    if overlap and cluster and split_epilogue:
         epi = bm * (bn // 2 + 8) * 2
     else:
-        # TMA store needs a dense BM x BN buffer; int4 uses +8 padding.
-        epi = bm * (bn if tma_store else (bn + 8)) * 2
+        epi = bm * (bn + 8) * 2   # int4 staging buffer, +8 bank-pad
     smem     = (ns * slot + epi if overlap else max(ns * slot, epi)) + 1024
     smem_cap = (224 if overlap else 228) * 1024
     if smem > smem_cap:
@@ -358,7 +340,7 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
 # substitute_kernel_constexprs / substitute_launcher_constants now live in the
 # codegen package (imported + re-exported at the top of this module).
 
-def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8,
+def knob_kwargs(bm, bn, bk, ns, gsm, nw, persistent=0, ld_width=8,
                 overlap=0, split_epilogue=0, l1_no_alloc=0) -> dict:
     """Map UI knobs to the constant names used in the source files.
 
@@ -367,7 +349,7 @@ def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8,
     in kernel.cu and leaves it untouched.
     """
     return {"BM": bm, "BN": bn, "BK": bk, "NS": ns, "GROUP_SIZE_M": gsm,
-            "NUM_WARPS": nw, "TMA_STORE": tma_store, "PERSISTENT": persistent,
+            "NUM_WARPS": nw, "PERSISTENT": persistent,
             "TCGEN05_LD_WIDTH": ld_width, "EPILOGUE_OVERLAP": overlap,
             "EPILOGUE_SPLIT": split_epilogue, "EPILOGUE_L1_NO_ALLOC": l1_no_alloc}
 
@@ -375,10 +357,10 @@ def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8,
 # (_strip_module_docstring moved to codegen.generate, used by generate_host.)
 
 
-def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, ld_width=8,
+def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, ld_width=8,
                   overlap=0, split_epilogue=0, l1_no_alloc=0) -> str:
     """Return the kernel.cu specialized to this knob combo (delegates to codegen)."""
-    config = knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, ld_width=ld_width,
+    config = knob_kwargs(bm, bn, bk, ns, gsm, nw, ld_width=ld_width,
                          overlap=overlap, split_epilogue=split_epilogue,
                          l1_no_alloc=l1_no_alloc)
     config["skeleton"] = tier["dir"]
@@ -386,10 +368,10 @@ def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, ld_width=8,
     return _generate_kernel(config)
 
 
-def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0,
+def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, persistent=0,
                 overlap=0, split_epilogue=0, l1_no_alloc=0) -> str:
     """Return a self-contained host script for this knob combo (delegates to codegen)."""
-    config = knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, persistent,
+    config = knob_kwargs(bm, bn, bk, ns, gsm, nw, persistent=persistent,
                          overlap=overlap, split_epilogue=split_epilogue,
                          l1_no_alloc=l1_no_alloc)
     config["skeleton"] = tier["dir"]
@@ -429,7 +411,7 @@ def load_compat() -> dict:
 
 @functools.lru_cache(maxsize=1)
 def _compat_index() -> dict:
-    """(tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store, persistent,
+    """(tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, persistent,
     ld_width, overlap, split_epilogue) -> entry.
 
     two_cta is part of the key because the warp-spec single-CTA and 2-CTA
@@ -437,19 +419,19 @@ def _compat_index() -> dict:
     idx = {}
     for e in load_compat().get("entries", []):
         idx[(e["tier"], e.get("two_cta", 0), e["bm"], e["bn"], e["bk"], e["ns"],
-             e["gsm"], e["nw"], e.get("tma_store", 0), e.get("persistent", 0),
+             e["gsm"], e["nw"], e.get("persistent", 0),
              e.get("ld_width", 8), e.get("overlap", 0), e.get("split_epilogue", 0),
              e.get("l1_no_alloc", 0))] = e
     return idx
 
 
-def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0,
+def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw, persistent=0,
                   ld_width=8, overlap=0, split_epilogue=0, two_cta=0, l1_no_alloc=0):
     """Return ('verified'|'failed'|'unknown', entry|None) for a combo.
 
     'verified'/'failed' come from the empirical B200 sweep; 'unknown'
     means the combo wasn't in the swept grid (fall back to static)."""
-    e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store,
+    e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw,
                              persistent, ld_width, overlap, split_epilogue, l1_no_alloc))
     if e is None:
         return "unknown", None
@@ -462,12 +444,12 @@ def shape_key(M, N, K):
     return str(M) if (M == N == K) else f"{M}x{N}x{K}"
 
 
-def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, M, N, K, tma_store=0,
+def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, M, N, K,
                 persistent=0, ld_width=8, overlap=0, split_epilogue=0, two_cta=0,
                 l1_no_alloc=0):
     """Return the measured {rel_err, tflops, vs_cublas} for this combo at
     shape (M, N, K), or None if not in the matrix."""
-    e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store,
+    e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw,
                              persistent, ld_width, overlap, split_epilogue, l1_no_alloc))
     if e is None:
         return None
@@ -492,7 +474,7 @@ def recommended_config(shape=None):
     — the 'recommended' defaults.  ``shape`` is an (M, N, K) tuple (or an int
     for a square shape); None / unswept falls back to the largest swept square
     (its optimum is the stable page-load default).  Returns a dict with
-    tier_dir, knobs, tma_store, persistent, ms_ws, two_cta, tflops, shape;
+    tier_dir, knobs, persistent, ms_ws, two_cta, tflops, shape;
     or None if the matrix is empty."""
     entries = [e for e in load_compat().get("entries", []) if e.get("correct")]
     shapes = perf_shapes()
@@ -518,7 +500,7 @@ def recommended_config(shape=None):
     # take it from the entry; the dir only tells us whether warp-spec is on.
     ms_ws, _ = toggles_for_dir(best["tier"])
     two_cta = best.get("two_cta", 0)
-    knobs = {k: best[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw", "tma_store")}
+    knobs = {k: best[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw")}
     knobs["persistent"] = best.get("persistent", 0)
     knobs["ld_width"] = best.get("ld_width", 8)
     knobs["overlap"] = best.get("overlap", 0)

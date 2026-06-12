@@ -90,15 +90,13 @@ def all_combos(tier_dirs, bn_opts=None):
         # EPILOGUE_SPLIT is a Tier 3 cluster epilogue staging variant.  Keep
         # non-cluster sweeps focused on code they can actually generate.
         sp_opts = mc.EPILOGUE_SPLIT_OPTS if tier.get("cluster") else [0]
-        # L1::no_allocate on the C store — int4-store path only (inert under TMA
-        # store, where the validator rejects l1=1 so we don't sweep redundant cubins).
-        for bm, bn, bk, ns, gsm, nw, ts, pers, ldw, ov, sp, l1 in itertools.product(
+        for bm, bn, bk, ns, gsm, nw, pers, ldw, ov, sp, l1 in itertools.product(
             mc.BM_OPTS, bn_list, mc.BK_OPTS, mc.NS_OPTS, mc.GSM_OPTS, mc.NW_OPTS,
-            mc.TMA_STORE_OPTS, pers_opts, ld_list, ov_opts, sp_opts,
+            pers_opts, ld_list, ov_opts, sp_opts,
             mc.EPILOGUE_L1_NO_ALLOC_OPTS
         ):
             yield tier, dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
-                             tma_store=ts, persistent=pers, ld_width=ldw, overlap=ov,
+                             persistent=pers, ld_width=ldw, overlap=ov,
                              split_epilogue=sp, l1_no_alloc=l1)
 
 
@@ -137,10 +135,10 @@ def launch_spec(tier, k, M, N, K, num_sms=None):
     a_slot = k["bm"] * k["bk"] * 2
     b_slot = bn_local * k["bk"] * 2
     slot   = a_slot + b_slot
-    if k.get("overlap", 0) and tier["cluster"] and k.get("split_epilogue", 0) and not k["tma_store"]:
+    if k.get("overlap", 0) and tier["cluster"] and k.get("split_epilogue", 0):
         epi = k["bm"] * (k["bn"] // 2 + 8) * 2
     else:
-        epi = k["bm"] * (k["bn"] if k["tma_store"] else k["bn"] + 8) * 2
+        epi = k["bm"] * (k["bn"] + 8) * 2
     # Overlap runs ring + epilogue staging concurrently -> disjoint (ring+epi).
     shared = ((k["ns"] * slot + epi) if k.get("overlap", 0) else max(k["ns"] * slot, epi)) + 1024
     # Overlap: 2 stream warps (TMA+MMA) in warpgroup 0 + nw epilogue warps from
@@ -165,7 +163,7 @@ def tag_for(tier, k):
     # two_cta (cluster) changes the cubin and shares the dir with the single-CTA
     # arm, so it must be in the tag or the two arms clobber each other's cubin.
     return (f"{tier['dir']}_tc{int(tier['cluster'])}_bm{k['bm']}_bn{k['bn']}_bk{k['bk']}"
-            f"_ns{k['ns']}_gsm{k['gsm']}_nw{k['nw']}_ts{k['tma_store']}"
+            f"_ns{k['ns']}_gsm{k['gsm']}_nw{k['nw']}"
             f"_ld{k.get('ld_width', 8)}_ov{k.get('overlap', 0)}"
             f"_sp{k.get('split_epilogue', 0)}_l1{k.get('l1_no_alloc', 0)}")
 
@@ -175,7 +173,7 @@ def render_to_dir(tier, k):
     d = SCRATCH / tag_for(tier, k)
     d.mkdir(parents=True, exist_ok=True)
     src = mc.render_kernel(tier, k["bm"], k["bn"], k["bk"], k["ns"], k["gsm"], k["nw"],
-                           tma_store=k["tma_store"], ld_width=k.get("ld_width", 8),
+                           ld_width=k.get("ld_width", 8),
                            overlap=k.get("overlap", 0),
                            split_epilogue=k.get("split_epilogue", 0),
                            l1_no_alloc=k.get("l1_no_alloc", 0))
@@ -281,7 +279,7 @@ def build_to_run(tier_dirs, invalid_sample, bn_opts=None):
     valid, invalid = [], []
     for tier, k in all_combos(tier_dirs, bn_opts):
         warnings = mc.validate_config(k["bm"], k["bn"], k["bk"], k["ns"], k["gsm"], k["nw"],
-                                      cluster=tier["cluster"], tma_store=k["tma_store"],
+                                      cluster=tier["cluster"],
                                       persistent=k.get("persistent", 0),
                                       persistent_ok=tier.get("persistent_ok", False),
                                       ld_width=k.get("ld_width", 8),
@@ -471,9 +469,9 @@ def main():
     surprises = [r for r in ordered if r["validator"] == "invalid" and r["correct"]]
     for r in bad:
         print(f"BAD  {r['tier']:24} bn{r['bn']:>3} ns{r['ns']} gsm{r['gsm']:>2} nw{r['nw']:>2} "
-              f"ts{r.get('tma_store', 0)}  {r.get('error') or 'incorrect'}")
+              f"{r.get('error') or 'incorrect'}")
     for r in surprises:
-        print(f"INVALID-but-WORKS  {r['tier']} bn{r['bn']} ns{r['ns']} gsm{r['gsm']} nw{r['nw']} ts{r.get('tma_store',0)}")
+        print(f"INVALID-but-WORKS  {r['tier']} bn{r['bn']} ns{r['ns']} gsm{r['gsm']} nw{r['nw']}")
 
     print("\n=== SUMMARY ===")
     print(f"valid combos run:        {n_valid}   (worker spawns: {n_spawns})")
@@ -504,7 +502,7 @@ def main():
                 label = f"{tdir}{' (2-CTA)' if tc else ' (1-CTA)'}"
                 print(f"  best {label:32}: {tf:.0f} TFLOPS ({ratio:.0%} cuBLAS)  "
                       f"bn{best['bn']} ns{best['ns']} gsm{best['gsm']} nw{best['nw']} "
-                      f"ts{best.get('tma_store',0)} pers{best.get('persistent',0)}")
+                      f"pers{best.get('persistent',0)}")
 
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(ordered, indent=2))
@@ -525,7 +523,7 @@ def main():
                 "vs_cublas": round(tf / cublas_tflops[s], 4) if (tf and cublas_tflops.get(s)) else None,
             }
         entries.append({k: r[k] for k in ("tier", "bm", "bn", "bk", "ns", "gsm", "nw",
-                                           "tma_store", "persistent")}
+                                           "persistent")}
                        | {"two_cta": r.get("two_cta", 0),
                           "ld_width": r.get("ld_width", 8), "overlap": r.get("overlap", 0),
                           "split_epilogue": r.get("split_epilogue", 0),

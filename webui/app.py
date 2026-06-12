@@ -107,12 +107,6 @@ with st.sidebar:
         help="`__cluster_dims__(2,1,1)` + `cta_group::2`: two CTAs cooperate in one "
              "tcgen05.mma (half-B per CTA, doubles M per MMA).  Requires "
              "multi-staging + warp specialization (above).") == "On"
-    tma_store = st.selectbox(
-        "TMA store epilogue", mc.ONOFF_OPTS, index=_onoff("tma_store"),
-        help="Epilogue Phase 2: write the result to GMEM with one async TMA store "
-             "per CTA (swizzled SMEM staging) instead of all-thread int4 stores.  "
-             "A universal knob — often *not* a win (see the measured "
-             "TFLOPS), kept as an honest mechanism comparison.") == "On"
     persistent = st.selectbox(
         "Persistent grid", mc.ONOFF_OPTS, index=_onoff("persistent"),
         help="Launch one CTA per SM and loop over output tiles inside the "
@@ -132,8 +126,7 @@ with st.sidebar:
         help="Run each tile's epilogue concurrently with the next tile's K-loop "
              "(TMEM double-buffer).  Launches 2 stream warps (TMA + MMA) on top of "
              "num_warps epilogue warps, so num_warps scales the epilogue.  A win on "
-             "epilogue-bound low-K shapes.  Requires Persistent grid on and the int4 "
-             "store (TMA store off).") == "On"
+             "epilogue-bound low-K shapes.  Requires Persistent grid on.") == "On"
     split_epilogue = st.selectbox(
         "Split epilogue writeback", mc.ONOFF_OPTS, index=_onoff("split_epilogue"),
         help="For Tier 3 overlap, stage/store the epilogue in two half-BN column "
@@ -143,8 +136,7 @@ with st.sidebar:
         "L1 no-allocate C store", mc.ONOFF_OPTS, index=_onoff("l1_no_alloc"),
         help="Write the C output with `st...L1::no_allocate` so the write-once "
              "result doesn't evict A/B from L1.  A measured win when the epilogue "
-             "is exposed (low K), null at high K.  int4 store path only (turn off "
-             "TMA store).") == "On"
+             "is exposed (low K), null at high K.") == "On"
 
     st.subheader("Problem shape")
     shapes_text = st.text_area(
@@ -159,7 +151,7 @@ with st.sidebar:
 
 if generate:
     st.session_state.applied = dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
-                                    ms_ws=ms_ws, two_cta=two_cta, tma_store=int(tma_store),
+                                    ms_ws=ms_ws, two_cta=two_cta,
                                     persistent=int(persistent), ld_width=int(ld_width),
                                     overlap=int(overlap), split_epilogue=int(split_epilogue),
                                     l1_no_alloc=int(l1_no_alloc), shapes_text=shapes_text)
@@ -173,7 +165,6 @@ cfg = st.session_state.applied
 bm, bn, bk = cfg["bm"], cfg["bn"], cfg["bk"]
 ns, gsm, nw = cfg["ns"], cfg["gsm"], cfg["nw"]
 ms_ws, two_cta = cfg["ms_ws"], cfg["two_cta"]
-tma_store = cfg["tma_store"]
 persistent = cfg.get("persistent", 0)
 ld_width = cfg.get("ld_width", 8)
 overlap = cfg.get("overlap", 0)
@@ -215,7 +206,7 @@ except Exception:
 # ── Validate (static checker) ─────────────────────────────────────────
 
 warnings = mc.validate_config(bm, bn, bk, ns, gsm, nw, cluster=tier["cluster"],
-                              tma_store=tma_store, persistent=persistent,
+                              persistent=persistent,
                               persistent_ok=tier.get("persistent_ok", False),
                               shape=shapes[0] if shapes else None, ld_width=ld_width,
                               overlap=overlap, split_epilogue=split_epilogue,
@@ -231,7 +222,7 @@ else:
     try:
         two_cta_k = int(tier["cluster"])   # recorded compat knob (shared-dir discriminator)
         status, entry = mc.compat_status(tier["dir"], bm, bn, bk, ns, gsm, nw,
-                                          tma_store=tma_store, persistent=persistent,
+                                          persistent=persistent,
                                           ld_width=ld_width, overlap=overlap,
                                           split_epilogue=split_epilogue, two_cta=two_cta_k,
                                           l1_no_alloc=l1_no_alloc)
@@ -239,7 +230,7 @@ else:
             # Prefer perf at the shape the user is tuning; else the largest swept square.
             em, en, ek = shapes[0]
             p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, em, en, ek,
-                               tma_store=tma_store, persistent=persistent, ld_width=ld_width,
+                               persistent=persistent, ld_width=ld_width,
                                overlap=overlap, split_epilogue=split_epilogue, two_cta=two_cta_k,
                                l1_no_alloc=l1_no_alloc)
             ref = (em, en, ek)
@@ -248,7 +239,7 @@ else:
                 if squares:
                     ref = max(squares)
                     p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, *ref,
-                                       tma_store=tma_store, persistent=persistent, ld_width=ld_width,
+                                       persistent=persistent, ld_width=ld_width,
                                        overlap=overlap, split_epilogue=split_epilogue, two_cta=two_cta_k,
                                        l1_no_alloc=l1_no_alloc)
             msg = f"✅ Empirically verified on B200 ({cm.get('arch', 'sm_100a')}): compiles, runs, correct."
@@ -268,10 +259,10 @@ else:
 
 # ── Render kernel + self-contained host ──────────────────────────────
 
-kernel_src = mc.render_kernel(tier, bm, bn, bk, ns, gsm, nw, tma_store=tma_store,
+kernel_src = mc.render_kernel(tier, bm, bn, bk, ns, gsm, nw,
                               ld_width=ld_width, overlap=overlap,
                               split_epilogue=split_epilogue, l1_no_alloc=l1_no_alloc)
-host_src   = mc.render_host(tier, bm, bn, bk, ns, gsm, nw, tma_store=tma_store,
+host_src   = mc.render_host(tier, bm, bn, bk, ns, gsm, nw,
                             persistent=persistent, overlap=overlap,
                             split_epilogue=split_epilogue, l1_no_alloc=l1_no_alloc)
 
@@ -351,7 +342,7 @@ with tab_bench:
     if live_bench.live_available() and shapes:
         m0, n0, k0 = shapes[0]
         knobs = dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
-                     tma_store=tma_store, persistent=persistent, ld_width=ld_width,
+                     persistent=persistent, ld_width=ld_width,
                      overlap=overlap, split_epilogue=split_epilogue, l1_no_alloc=l1_no_alloc)
         sig = (tier["dir"], tuple(sorted(knobs.items())), m0, n0, k0)
         cache = st.session_state.setdefault("live_cache", {})
@@ -425,7 +416,7 @@ with tab_bench:
                 f"{head} at {m0}×{n0}×{k0}: **{b['tflops']:.0f} TFLOPS** ({vs_b} of cuBLAS "
                 f"{cub}) — Warp-spec={bws} · 2-CTA cluster={bcta} · "
                 f"BN={b['bn']} NS={b['ns']} GSM={b['gsm']} NW={b['nw']} "
-                f"TMA_STORE={b['tma_store']} PERSISTENT={b['persistent']} "
+                f"PERSISTENT={b['persistent']} "
                 f"LD_WIDTH={b.get('ld_width', 8)} OVERLAP={b.get('overlap', 0)} "
                 f"SPLIT={b.get('split_epilogue', 0)} L1NA={b.get('l1_no_alloc', 0)}")
             n_res = len(at["results"])
@@ -439,7 +430,7 @@ with tab_bench:
                 ws, cta = _knob_cols(r)
                 rows.append({"#": i + 1, "Warp-spec": ws, "2-CTA": cta,
                              "BN": r["bn"], "NS": r["ns"], "GSM": r["gsm"], "NW": r["nw"],
-                             "TMA": r["tma_store"], "PERS": r["persistent"],
+                             "PERS": r["persistent"],
                              "LD": r.get("ld_width", 8), "OV": r.get("overlap", 0),
                              "SPLIT": r.get("split_epilogue", 0), "L1NA": r.get("l1_no_alloc", 0),
                              "TFLOPS": f"{r['tflops']:.0f}",
@@ -505,7 +496,7 @@ with tab_bench:
         square = (m == n == k)
         try:
             p = mc.compat_perf(tier["dir"], bm, bn, bk, ns, gsm, nw, m, n, k,
-                               tma_store=tma_store, persistent=persistent, ld_width=ld_width,
+                               persistent=persistent, ld_width=ld_width,
                                overlap=overlap, split_epilogue=split_epilogue,
                                two_cta=int(tier["cluster"]), l1_no_alloc=l1_no_alloc)
             cub = mc.cublas_tflops(m, n, k)
