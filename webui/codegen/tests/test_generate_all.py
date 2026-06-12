@@ -29,18 +29,19 @@ def all_valid_configs():
     for (ms_ws, two_cta), tier in mc.TIER_MAP.items():
         if tier is None:
             continue
-        for bm, bn, bk, ns, gsm, nw, tma, pers, ld, ov, sp in itertools.product(
+        for bm, bn, bk, ns, gsm, nw, tma, pers, ld, ov, sp, l1 in itertools.product(
                 mc.BM_OPTS, mc.BN_OPTS, mc.BK_OPTS, mc.NS_OPTS, mc.GSM_OPTS, mc.NW_OPTS,
                 mc.TMA_STORE_OPTS, mc.PERSISTENT_OPTS, mc.TCGEN05_LD_WIDTH_OPTS,
-                mc.EPILOGUE_OVERLAP_OPTS, mc.EPILOGUE_SPLIT_OPTS):
+                mc.EPILOGUE_OVERLAP_OPTS, mc.EPILOGUE_SPLIT_OPTS,
+                mc.EPILOGUE_L1_NO_ALLOC_OPTS):
             errs = mc.validate_config(
                 bm, bn, bk, ns, gsm, nw, cluster=tier["cluster"], tma_store=tma,
                 persistent=pers, persistent_ok=tier.get("persistent_ok", False),
-                ld_width=ld, overlap=ov, split_epilogue=sp)
+                ld_width=ld, overlap=ov, split_epilogue=sp, l1_no_alloc=l1)
             if errs:
                 continue
             cfg = mc.knob_kwargs(bm, bn, bk, ns, gsm, nw, tma, pers,
-                                 ld_width=ld, overlap=ov, split_epilogue=sp)
+                                 ld_width=ld, overlap=ov, split_epilogue=sp, l1_no_alloc=l1)
             cfg["skeleton"] = tier["dir"]
             cfg["TWO_CTA"] = int(tier["cluster"])
             yield cfg

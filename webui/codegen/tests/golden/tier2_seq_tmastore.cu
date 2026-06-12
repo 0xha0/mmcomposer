@@ -470,6 +470,11 @@ __device__ __forceinline__ void matmul_cluster_impl(
     // TMA_STORE (0/1) picks Phase 2: a flat int4 store loop, or one async
     // TMA store per CTA.  The TMA store needs a tightly-packed SMEM source
     // (no +8 bank-pad), so EPI_LD switches accordingly.
+    //
+    // EPILOGUE_L1_NO_ALLOC (knob): write-once C store bypasses L1 allocation so
+    // it doesn't evict A/B from L1.  Win when the epilogue is exposed (low K),
+    // null at high K — a sweep knob.  (int4 store path only; TMA store unaffected.)
+#define EPI_ST_I4(DST, VAL) (*reinterpret_cast<int4*>(DST) = (VAL))
     constexpr int EPI_LD = BN;
     auto C_sh = reinterpret_cast<__nv_bfloat16(*)[EPI_LD]>(smem);
 
@@ -535,6 +540,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
             EPI_DEALLOC(taddr, BN);
         }
     }
+#undef EPI_ST_I4
 #undef EPI_DEALLOC
 
         // Drain this tile fully (TMEM reads + SMEM staging) before the

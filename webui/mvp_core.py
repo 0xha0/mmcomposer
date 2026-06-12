@@ -97,6 +97,11 @@ EPILOGUE_OVERLAP_OPTS = [0, 1]
 # K-loop ring such as NS=5 at BN=256.  It is exposed as a separate experiment
 # knob because it trades less SMEM for an extra epilogue pass/barrier.
 EPILOGUE_SPLIT_OPTS = [0, 1]
+# Write the C output with `st...L1::no_allocate` so the streamed (write-once)
+# result doesn't evict A/B from L1.  Shape-dependent: a measured +3-6% when the
+# epilogue is exposed (low K) and null at high K — hence a sweep knob, not
+# always-on.  int4 store path only (no effect under TMA_STORE).
+EPILOGUE_L1_NO_ALLOC_OPTS = [0, 1]
 # On/off knobs are presented as dropdowns too, for a uniform UI (and to
 # leave room for an "Auto" value once auto-tuning lands).
 ONOFF_OPTS = ["Off", "On"]
@@ -159,7 +164,7 @@ def tier_for(ms_ws: bool, two_cta: bool):
 
 def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
                     persistent=0, persistent_ok=True, shape=None, ld_width=8,
-                    overlap=0, split_epilogue=0) -> list[str]:
+                    overlap=0, split_epilogue=0, l1_no_alloc=0) -> list[str]:
     """Return a list of human-readable warnings; empty list = valid.
 
     ``cluster`` selects the 2-CTA geometry: each CTA owns BN/2 columns of
@@ -226,6 +231,12 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
         if bn % 2 != 0 or (bn // 2) % 8 != 0:
             out.append(f"**BN = {bn}** must split into two int4-aligned halves "
                        "for split epilogue writeback.")
+
+    # L1::no_allocate only affects the int4 C store; under the TMA store path it
+    # is inert, so reject it there (keeps it out of the swept grid as a no-op).
+    if l1_no_alloc and tma_store:
+        out.append("**L1 no-allocate store** applies only to the int4 store path; "
+                   "turn off **TMA store epilogue**.")
 
     if ns < 2:
         out.append(
@@ -348,7 +359,7 @@ def validate_config(bm, bn, bk, ns, gsm, nw, *, cluster: bool, tma_store=0,
 # codegen package (imported + re-exported at the top of this module).
 
 def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8,
-                overlap=0, split_epilogue=0) -> dict:
+                overlap=0, split_epilogue=0, l1_no_alloc=0) -> dict:
     """Map UI knobs to the constant names used in the source files.
 
     PERSISTENT only appears in the launcher (it's a grid choice, not a
@@ -358,27 +369,29 @@ def knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0, ld_width=8,
     return {"BM": bm, "BN": bn, "BK": bk, "NS": ns, "GROUP_SIZE_M": gsm,
             "NUM_WARPS": nw, "TMA_STORE": tma_store, "PERSISTENT": persistent,
             "TCGEN05_LD_WIDTH": ld_width, "EPILOGUE_OVERLAP": overlap,
-            "EPILOGUE_SPLIT": split_epilogue}
+            "EPILOGUE_SPLIT": split_epilogue, "EPILOGUE_L1_NO_ALLOC": l1_no_alloc}
 
 
 # (_strip_module_docstring moved to codegen.generate, used by generate_host.)
 
 
 def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, ld_width=8,
-                  overlap=0, split_epilogue=0) -> str:
+                  overlap=0, split_epilogue=0, l1_no_alloc=0) -> str:
     """Return the kernel.cu specialized to this knob combo (delegates to codegen)."""
     config = knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, ld_width=ld_width,
-                         overlap=overlap, split_epilogue=split_epilogue)
+                         overlap=overlap, split_epilogue=split_epilogue,
+                         l1_no_alloc=l1_no_alloc)
     config["skeleton"] = tier["dir"]
     config["TWO_CTA"] = int(tier["cluster"])   # cluster tier -> the cta_group::2 #if arms
     return _generate_kernel(config)
 
 
 def render_host(tier: dict, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0,
-                overlap=0, split_epilogue=0) -> str:
+                overlap=0, split_epilogue=0, l1_no_alloc=0) -> str:
     """Return a self-contained host script for this knob combo (delegates to codegen)."""
     config = knob_kwargs(bm, bn, bk, ns, gsm, nw, tma_store, persistent,
-                         overlap=overlap, split_epilogue=split_epilogue)
+                         overlap=overlap, split_epilogue=split_epilogue,
+                         l1_no_alloc=l1_no_alloc)
     config["skeleton"] = tier["dir"]
     config["label"] = tier["label"]
     config["TWO_CTA"] = int(tier["cluster"])
@@ -425,18 +438,19 @@ def _compat_index() -> dict:
     for e in load_compat().get("entries", []):
         idx[(e["tier"], e.get("two_cta", 0), e["bm"], e["bn"], e["bk"], e["ns"],
              e["gsm"], e["nw"], e.get("tma_store", 0), e.get("persistent", 0),
-             e.get("ld_width", 8), e.get("overlap", 0), e.get("split_epilogue", 0))] = e
+             e.get("ld_width", 8), e.get("overlap", 0), e.get("split_epilogue", 0),
+             e.get("l1_no_alloc", 0))] = e
     return idx
 
 
 def compat_status(tier_dir, bm, bn, bk, ns, gsm, nw, tma_store=0, persistent=0,
-                  ld_width=8, overlap=0, split_epilogue=0, two_cta=0):
+                  ld_width=8, overlap=0, split_epilogue=0, two_cta=0, l1_no_alloc=0):
     """Return ('verified'|'failed'|'unknown', entry|None) for a combo.
 
     'verified'/'failed' come from the empirical B200 sweep; 'unknown'
     means the combo wasn't in the swept grid (fall back to static)."""
     e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store,
-                             persistent, ld_width, overlap, split_epilogue))
+                             persistent, ld_width, overlap, split_epilogue, l1_no_alloc))
     if e is None:
         return "unknown", None
     return ("verified" if e["correct"] else "failed"), e
@@ -449,11 +463,12 @@ def shape_key(M, N, K):
 
 
 def compat_perf(tier_dir, bm, bn, bk, ns, gsm, nw, M, N, K, tma_store=0,
-                persistent=0, ld_width=8, overlap=0, split_epilogue=0, two_cta=0):
+                persistent=0, ld_width=8, overlap=0, split_epilogue=0, two_cta=0,
+                l1_no_alloc=0):
     """Return the measured {rel_err, tflops, vs_cublas} for this combo at
     shape (M, N, K), or None if not in the matrix."""
     e = _compat_index().get((tier_dir, two_cta, bm, bn, bk, ns, gsm, nw, tma_store,
-                             persistent, ld_width, overlap, split_epilogue))
+                             persistent, ld_width, overlap, split_epilogue, l1_no_alloc))
     if e is None:
         return None
     return (e.get("perf") or {}).get(shape_key(M, N, K))
@@ -508,6 +523,7 @@ def recommended_config(shape=None):
     knobs["ld_width"] = best.get("ld_width", 8)
     knobs["overlap"] = best.get("overlap", 0)
     knobs["split_epilogue"] = best.get("split_epilogue", 0)
+    knobs["l1_no_alloc"] = best.get("l1_no_alloc", 0)
     return {**knobs, "ms_ws": ms_ws, "two_cta": two_cta,
             "tflops": best_tf, "shape": ref}
 

@@ -64,7 +64,8 @@ def run_live_bench(tier, knobs: dict, M: int, N: int, K: int, timeout: int = 900
         tier, knobs["bm"], knobs["bn"], knobs["bk"], knobs["ns"], knobs["gsm"],
         knobs["nw"], tma_store=knobs.get("tma_store", 0),
         ld_width=knobs.get("ld_width", 8), overlap=knobs.get("overlap", 0),
-        split_epilogue=knobs.get("split_epilogue", 0)))
+        split_epilogue=knobs.get("split_epilogue", 0),
+        l1_no_alloc=knobs.get("l1_no_alloc", 0)))
 
     py = os.environ.get("MMCOMPOSER_PY", sys.executable)
     srun_args = shlex.split(os.environ.get("MMCOMPOSER_SRUN_ARGS", DEFAULT_SRUN_ARGS))
@@ -134,6 +135,7 @@ def _rank_matrix(out_matrix, M, N, K) -> dict:
                             "two_cta": e.get("two_cta", 0),
                             "ld_width": e.get("ld_width", 8), "overlap": e.get("overlap", 0),
                             "split_epilogue": e.get("split_epilogue", 0),
+                            "l1_no_alloc": e.get("l1_no_alloc", 0),
                             "tflops": p["tflops"], "vs_cublas": p.get("vs_cublas"),
                             "rel_err": p.get("rel_err")})
     results.sort(key=lambda r: r["tflops"], reverse=True)
@@ -232,6 +234,7 @@ def autotune_partial(job) -> dict:
                                 "two_cta": e.get("two_cta", 0),
                                 "ld_width": e.get("ld_width", 8), "overlap": e.get("overlap", 0),
                                 "split_epilogue": e.get("split_epilogue", 0),
+                                "l1_no_alloc": e.get("l1_no_alloc", 0),
                                 "tflops": tf, "rel_err": p.get("rel_err"),
                                 "vs_cublas": (tf / cub) if cub else None})
     except FileNotFoundError:

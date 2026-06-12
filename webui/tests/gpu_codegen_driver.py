@@ -90,13 +90,16 @@ def all_combos(tier_dirs, bn_opts=None):
         # EPILOGUE_SPLIT is a Tier 3 cluster epilogue staging variant.  Keep
         # non-cluster sweeps focused on code they can actually generate.
         sp_opts = mc.EPILOGUE_SPLIT_OPTS if tier.get("cluster") else [0]
-        for bm, bn, bk, ns, gsm, nw, ts, pers, ldw, ov, sp in itertools.product(
+        # L1::no_allocate on the C store — int4-store path only (inert under TMA
+        # store, where the validator rejects l1=1 so we don't sweep redundant cubins).
+        for bm, bn, bk, ns, gsm, nw, ts, pers, ldw, ov, sp, l1 in itertools.product(
             mc.BM_OPTS, bn_list, mc.BK_OPTS, mc.NS_OPTS, mc.GSM_OPTS, mc.NW_OPTS,
-            mc.TMA_STORE_OPTS, pers_opts, ld_list, ov_opts, sp_opts
+            mc.TMA_STORE_OPTS, pers_opts, ld_list, ov_opts, sp_opts,
+            mc.EPILOGUE_L1_NO_ALLOC_OPTS
         ):
             yield tier, dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
                              tma_store=ts, persistent=pers, ld_width=ldw, overlap=ov,
-                             split_epilogue=sp)
+                             split_epilogue=sp, l1_no_alloc=l1)
 
 
 def parse_perf_shapes(spec):
@@ -164,7 +167,7 @@ def tag_for(tier, k):
     return (f"{tier['dir']}_tc{int(tier['cluster'])}_bm{k['bm']}_bn{k['bn']}_bk{k['bk']}"
             f"_ns{k['ns']}_gsm{k['gsm']}_nw{k['nw']}_ts{k['tma_store']}"
             f"_ld{k.get('ld_width', 8)}_ov{k.get('overlap', 0)}"
-            f"_sp{k.get('split_epilogue', 0)}")
+            f"_sp{k.get('split_epilogue', 0)}_l1{k.get('l1_no_alloc', 0)}")
 
 
 def render_to_dir(tier, k):
@@ -174,7 +177,8 @@ def render_to_dir(tier, k):
     src = mc.render_kernel(tier, k["bm"], k["bn"], k["bk"], k["ns"], k["gsm"], k["nw"],
                            tma_store=k["tma_store"], ld_width=k.get("ld_width", 8),
                            overlap=k.get("overlap", 0),
-                           split_epilogue=k.get("split_epilogue", 0))
+                           split_epilogue=k.get("split_epilogue", 0),
+                           l1_no_alloc=k.get("l1_no_alloc", 0))
     # Codegen must emit a fully branch-free kernel; a residual #if / knob
     # if-constexpr means a forgotten conversion — fail clearly here rather than
     # as an opaque nvcc error during compile.
@@ -282,7 +286,8 @@ def build_to_run(tier_dirs, invalid_sample, bn_opts=None):
                                       persistent_ok=tier.get("persistent_ok", False),
                                       ld_width=k.get("ld_width", 8),
                                       overlap=k.get("overlap", 0),
-                                      split_epilogue=k.get("split_epilogue", 0))
+                                      split_epilogue=k.get("split_epilogue", 0),
+                                      l1_no_alloc=k.get("l1_no_alloc", 0))
         (valid if not warnings else invalid).append((tier, k))
     stepi = max(1, len(invalid) // max(1, invalid_sample))
     inv_sample = invalid[::stepi][:invalid_sample]
@@ -524,6 +529,7 @@ def main():
                        | {"two_cta": r.get("two_cta", 0),
                           "ld_width": r.get("ld_width", 8), "overlap": r.get("overlap", 0),
                           "split_epilogue": r.get("split_epilogue", 0),
+                          "l1_no_alloc": r.get("l1_no_alloc", 0),
                           "correct": bool(r["correct"]), "perf": perf})
     matrix = {
         "generated_by": "webui/tests/gpu_codegen_driver.py",

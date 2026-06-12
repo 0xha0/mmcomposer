@@ -447,6 +447,12 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 // EPILOGUE_SPLIT (constexpr) picks the two-pass half-BN writeback,
                 // which stages one BN/2 column panel at a time (EPI_STAGE_COLS=BN/2)
                 // so the epilogue SMEM shrinks enough for an extra K-loop stage.
+                //
+                // EPILOGUE_L1_NO_ALLOC (knob): the write-once C store bypasses L1
+                // allocation (`st...L1::no_allocate`) so it doesn't evict A/B from
+                // L1.  Measured win when the epilogue is exposed (low K), null at
+                // high K — so it's a sweep knob, not always-on.
+#define EPI_ST_I4(DST, VAL) (*reinterpret_cast<int4*>(DST) = (VAL))
                 {
                     static_assert((BN / 2) % 8 == 0, "split epilogue needs int4-aligned columns");
                     static_assert((BN / 2) % COL_GROUPS == 0,
@@ -489,12 +495,13 @@ __device__ __forceinline__ void matmul_cluster_impl(
                             const int flat = etid + s * EPI_THREADS;
                             const int row = flat / CHUNKS;
                             const int col = (flat % CHUNKS) * 8;
-                            *reinterpret_cast<int4*>(&C_ptr[(EPI_OUT_ROW + row) * N + EPI_OUT_COL_BASE + split_base + col]) =
-                                *reinterpret_cast<const int4*>(&C_sh[row][col]);
+                            EPI_ST_I4(&C_ptr[(EPI_OUT_ROW + row) * N + EPI_OUT_COL_BASE + split_base + col],
+                                      *reinterpret_cast<const int4*>(&C_sh[row][col]));
                         }
                         asm volatile("bar.sync 1, %0;" :: "n"(NUM_WARPS * 32));
                     }
                 }
+#undef EPI_ST_I4
             }
 #undef EPI_OUT_ROW
 #undef EPI_OUT_COL_BASE

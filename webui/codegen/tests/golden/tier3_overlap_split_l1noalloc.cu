@@ -6,13 +6,13 @@
 constexpr int BM           = 128;
 constexpr int BN           = 256;
 constexpr int BK           = 64;
-constexpr int NS           = 3;       // multi-stage SMEM ring depth
-constexpr int GROUP_SIZE_M = 4;       // CTA-swizzle chunk (1 = no swizzle)
-constexpr int NUM_WARPS    = 8;       // total warps per CTA
+constexpr int NS           = 4;       // multi-stage SMEM ring depth
+constexpr int GROUP_SIZE_M = 8;       // CTA-swizzle chunk (1 = no swizzle)
+constexpr int NUM_WARPS    = 4;       // total warps per CTA
 constexpr int TMA_STORE    = 0;       // epilogue Phase 2: 0 = int4 stores, 1 = async TMA store
 constexpr int TCGEN05_LD_WIDTH = 8;  // TMEM->reg epilogue load width: 8 or 16 (32-bit elems per lane)
 constexpr int EPILOGUE_OVERLAP = 1;  // 1 = persistent 2-CTA cluster + epilogue/K-loop overlap
-constexpr int EPILOGUE_SPLIT   = 0;  // 1 = split overlapped int4 writeback into two half-BN passes
+constexpr int EPILOGUE_SPLIT   = 1;  // 1 = split overlapped int4 writeback into two half-BN passes
 constexpr int TWO_CTA          = 1;  // 1 = 2-CTA cluster MMA (cta_group::2); 0 = single-CTA
 
 // ── Derived constants (do not edit) ─────────────────────────────────
@@ -309,7 +309,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
         __shared__ uint64_t tmem_empty[2];
         // Split mode stages one half-BN column panel at a time, reducing
         // epilogue SMEM enough to make room for one extra K-loop stage.
-        constexpr int EPI_STAGE_COLS = BN;
+        constexpr int EPI_STAGE_COLS = BN / 2;
         auto C_sh = reinterpret_cast<__nv_bfloat16(*)[EPI_STAGE_COLS + 8]>(smem + NS * SLOT_BYTES);
 
         if (warp_id == 0)
@@ -452,36 +452,56 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 // allocation (`st...L1::no_allocate`) so it doesn't evict A/B from
                 // L1.  Measured win when the epilogue is exposed (low K), null at
                 // high K — so it's a sweep knob, not always-on.
-#define EPI_ST_I4(DST, VAL) (*reinterpret_cast<int4*>(DST) = (VAL))
+#define EPI_ST_I4(DST, VAL) do { int4 _v = (VAL); \
+        asm volatile("st.relaxed.cta.global.L1::no_allocate.v4.b32 [%0], {%1,%2,%3,%4};" \
+            :: "l"(DST), "r"(_v.x), "r"(_v.y), "r"(_v.z), "r"(_v.w) : "memory"); } while (0)
                 {
+                    static_assert((BN / 2) % 8 == 0, "split epilogue needs int4-aligned columns");
+                    static_assert((BN / 2) % COL_GROUPS == 0,
+                                  "split epilogue panel must divide across column warp groups");
+                    constexpr int SPLIT_COLS_PER_WARP = (BN / 2) / COL_GROUPS;
+                    static_assert(SPLIT_COLS_PER_WARP % LDW == 0,
+                                  "split epilogue per-warp column span must divide by LDW");
                     #pragma unroll
-                    for (int n = col_base; n < col_base + COLS_PER_WARP; n += LDW) {
-                        float t[LDW];
-                        tcgen05_ld_32x32b_x8 (trow + (uint32_t)n, t);
-                        tcgen05_wait_ld();
-                        __nv_bfloat162 pk[LDW / 2];
+                    for (int split = 0; split < 2; split++) {
+                        const int split_base = split * EPI_STAGE_COLS;
+                        const int panel_col_base = split_base + col_warp * SPLIT_COLS_PER_WARP;
                         #pragma unroll
-                        for (int i = 0; i < LDW / 2; i++)
-                            pk[i] = __floats2bfloat162_rn(t[2 * i], t[2 * i + 1]);
+                        for (int n = panel_col_base; n < panel_col_base + SPLIT_COLS_PER_WARP; n += LDW) {
+                            float t[LDW];
+                            tcgen05_ld_32x32b_x8 (trow + (uint32_t)n, t);
+                            tcgen05_wait_ld();
+                            __nv_bfloat162 pk[LDW / 2];
+                            #pragma unroll
+                            for (int i = 0; i < LDW / 2; i++)
+                                pk[i] = __floats2bfloat162_rn(t[2 * i], t[2 * i + 1]);
+                            #pragma unroll
+                            for (int c = 0; c < LDW; c += 8)
+                                *reinterpret_cast<int4*>(&C_sh[my_row][n - split_base + c]) =
+                                    *reinterpret_cast<int4*>(&pk[c / 2]);
+                        }
+                        asm volatile("bar.sync 1, %0;" :: "n"(NUM_WARPS * 32));
+
+                        // Once split 1 is staged, this tile's TMEM buffer is no
+                        // longer needed.  Release before the split-1 GMEM store so
+                        // the MMA warp can start the next tile earlier.
+                        if (split == 1 && ew == 0 && elect_sync())
+                            EPI_TMEM_EMPTY_ARRIVE(buf);
+
+                        constexpr int CHUNKS = (BN / 2) / 8;
+                        constexpr int STORES = BM * (BN / 2) / (EPI_THREADS * 8);
+                        static_assert(STORES * EPI_THREADS * 8 == BM * (BN / 2),
+                                      "split epilogue tile must divide across epilogue threads");
                         #pragma unroll
-                        for (int c = 0; c < LDW; c += 8)
-                            *reinterpret_cast<int4*>(&C_sh[my_row][n + c]) =
-                                *reinterpret_cast<int4*>(&pk[c / 2]);
+                        for (int s = 0; s < STORES; s++) {
+                            const int flat = etid + s * EPI_THREADS;
+                            const int row = flat / CHUNKS;
+                            const int col = (flat % CHUNKS) * 8;
+                            EPI_ST_I4(&C_ptr[(EPI_OUT_ROW + row) * N + EPI_OUT_COL_BASE + split_base + col],
+                                      *reinterpret_cast<const int4*>(&C_sh[row][col]));
+                        }
+                        asm volatile("bar.sync 1, %0;" :: "n"(NUM_WARPS * 32));
                     }
-                    asm volatile("bar.sync 1, %0;" :: "n"(NUM_WARPS * 32));
-                    if (ew == 0 && elect_sync())
-                        EPI_TMEM_EMPTY_ARRIVE(buf);
-                    constexpr int CHUNKS = BN / 8;
-                    constexpr int STORES = BM * BN / (EPI_THREADS * 8);
-                    #pragma unroll
-                    for (int s = 0; s < STORES; s++) {
-                        int flat = etid + s * EPI_THREADS;
-                        int row = flat / CHUNKS;
-                        int col = (flat % CHUNKS) * 8;
-                        EPI_ST_I4(&C_ptr[(EPI_OUT_ROW + row) * N + EPI_OUT_COL_BASE + col],
-                                  *reinterpret_cast<const int4*>(&C_sh[row][col]));
-                    }
-                    asm volatile("bar.sync 1, %0;" :: "n"(NUM_WARPS * 32));
                 }
 #undef EPI_ST_I4
             }
