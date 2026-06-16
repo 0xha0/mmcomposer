@@ -57,7 +57,7 @@
     \item GEMM breakdown.
     \item The core idea: a GEMM kernel is an orchestration problem.
     \item From diagram to code: how the synchronization actually looks.
-    \item MMComposer: how to use it to generate GEMM kernels.
+    \item Performance: how this design measures up to cuBLAS, with auto-tuning.
   \end{itemize}
 \end{frame}
 
@@ -97,6 +97,64 @@
       \item Store the final result to HBM.
     \end{itemize}
   \end{columns}
+\end{frame}
+
+\begin{frame}{The Big Picture: GEMM Dataflow on the SM}
+  One pass of data through the SM:
+  \textbf{HBM\,$\to$\,SMEM\,$\to$\,TMEM\,$\to$\,registers\,$\to$\,SMEM\,$\to$\,HBM},
+  each move done by a different engine.
+
+  \vspace{0.05cm}
+  \begin{center}
+    \begin{tikzpicture}[
+        eng/.style={ellipse, draw, thick, align=center, font=\scriptsize,
+                    minimum width=2.15cm, minimum height=0.95cm, fill=green!14, inner sep=1pt},
+        mem/.style={draw, thick, align=center, font=\scriptsize,
+                    minimum width=1.7cm, minimum height=0.8cm, fill=blue!10},
+        flow/.style={-{Latex[length=2.2mm]}, very thick, draw=mmblue},
+        sflow/.style={-{Latex[length=2.2mm]}, very thick, draw=mmgreen},
+        steplab/.style={draw=mmblue, fill=white, text=mmblue, font=\scriptsize,
+                        rounded corners=2pt, inner sep=2pt},
+        sstep/.style={draw=mmgreen, fill=white, text=mmgreen, font=\scriptsize,
+                      rounded corners=2pt, inner sep=2pt}
+      ]
+      \node[draw, thick, rounded corners=5pt, fill=gray!4, densely dashed,
+            minimum width=12.9cm, minimum height=4.35cm] (sm) at (0,1.15) {};
+      \node[font=\scriptsize\bfseries, text=mmgray, anchor=north west,
+            inner sep=3pt] at (sm.north west) {SM};
+
+      \node[eng] (tma)  at (-5.25,1.3) {TMA\\engine};
+      \node[mem] (smem) at (-2.05,1.3) {SMEM};
+      \node[eng] (tc)   at (1.25,2.55) {Tensor Core};
+      \node[mem] (tmem) at (4.65,2.55) {TMEM};
+      \node[eng] (cuda) at (4.65,0.25) {CUDA cores};
+      \node[mem] (regs) at (1.25,0.25) {registers};
+
+      \node[mem, fill=gray!12] (hbm) at (-5.25,-2.0) {HBM};
+
+      % forward: load -> MMA -> drain -> stage
+      \draw[flow] ([xshift=-4pt]hbm.north) -- ([xshift=-4pt]tma.south);
+      \draw[flow] ([yshift=5pt]tma.east) -- ([yshift=5pt]smem.west);
+      \draw[flow] (smem.north east) to[out=50,in=183] (tc.west);
+      \draw[flow] (tc.east) -- (tmem.west);
+      \draw[flow] (tmem.south) -- (cuda.north);
+      \draw[flow] (cuda.west) -- (regs.east);
+      \draw[flow] (regs.north west) to[out=150,in=-55] (smem.south east);
+      % store back
+      \draw[sflow] ([yshift=-6pt]smem.west) -- ([yshift=-6pt]tma.east);
+      \draw[sflow] ([xshift=5pt]tma.south) -- ([xshift=5pt]hbm.north);
+
+      \node[steplab] at (-3.55,1.78) {\textbf{1}\,load};
+      \node[steplab] at (-0.85,2.05) {\textbf{2}\,MMA};
+      \node[steplab] at (5.15,1.4)   {\textbf{3}\,drain};
+      \node[steplab] at (-0.5,0.6)   {\textbf{4}\,stage};
+      \node[sstep]   at (-3.55,0.82) {\textbf{5}\,store};
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{0.1cm}
+  {\footnotesize Green ellipses are \textbf{engines}; rectangles are
+  \textbf{storage}. Each numbered step routes through the engine that performs it.}
 \end{frame}
 
 \section{Orchestration}
@@ -593,6 +651,90 @@
   \end{table}
 \end{frame}
 
+\section{From Diagram to Code}
+
+\begin{frame}{From Diagram to Code}
+  We now connect the container diagram to the real kernel. Each warp role maps
+  to one loop that \emph{waits}, \emph{works}, then \emph{signals}:
+
+  \vspace{0.3cm}
+  \begin{table}
+    \centering\scriptsize
+    \begin{tabular}{llll}
+      \toprule
+      Warp & Waits on & Works & Signals \\
+      \midrule
+      TMA & \code{smem\_compute\_free\_mbar[slot]} & TMA load A/B & \code{smem\_compute\_full\_mbar[slot]} \\
+      MMA & \code{smem\_compute\_full\_mbar[slot]} & \code{tcgen05.mma} & \code{smem\_compute\_free\_mbar}, \code{tmem\_full} \\
+      Epilogue & \code{tmem\_full[buf]} & drain + TMA store & \code{tmem\_free\_mbar[buf]} \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+
+  \vspace{0.2cm}
+  The mbarriers \emph{are} the dashed signal arrows from the diagrams.
+\end{frame}
+
+\begin{frame}[fragile]{TMA Warp: Fill SMEM, Signal Compute Data Ready}
+  \begin{lstlisting}[language=C,basicstyle=\ttfamily\footnotesize]
+if (warp_id == 0 && elect_sync()) {            // TMA-load warp
+  for (int k = 0; k < num_k; k++) {
+    int slot = gk % NS;
+    // wait: compute buffer free
+    mbarrier_wait_phase(smem_compute_free_mbar[slot],
+                        smem_compute_free_phase[slot]);
+    tma_2d_load_g2(A_base(slot), A_tmap, ...);        // drain HBM -> fill A
+    tma_2d_load_g2(B_base(slot), B_tmap, ...);        //              fill B
+    // signal: compute data ready
+    mbarrier_arrive_expect_tx(smem_compute_full_mbar[slot],
+                              SLOT_BYTES);
+    gk++;
+  }
+}
+  \end{lstlisting}
+  \vspace{-0.2cm}
+  \footnotesize Wait for the output slot to be free, fill it, then signal
+  that the compute data is ready to consume.
+\end{frame}
+
+\begin{frame}[fragile]{MMA Warp: Compute Buffer Free, TMEM Data Ready}
+  \begin{lstlisting}[language=C,basicstyle=\ttfamily\footnotesize]
+else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {   // MMA warp
+  mbarrier_wait_phase(tmem_free_mbar[buf],
+                      tmem_free_phase[buf]);        // wait: TMEM buffer free
+  for (int k = 0; k < num_k; k++) {
+    int slot = gk % NS;
+    // wait: compute data ready
+    mbarrier_wait_phase(smem_compute_full_mbar[slot],
+                        smem_compute_full_phase[slot]);
+    issue_mma_chain(d_tmem, A_base(slot), B_base(slot), ...);
+    // signal: compute buffer free
+    tcgen05_commit_mcast_g2(smem_compute_free_mbar[slot],
+                            cta_mask);
+    gk++;
+  }
+  tcgen05_commit_mcast_g2(tmem_full[buf], cta_mask); // signal: TMEM data ready
+}
+  \end{lstlisting}
+  \vspace{-0.2cm}
+  \footnotesize \code{tmem\_full} is the concrete mbarrier for
+  \emph{TMEM data ready}; it fires only after all MMAs for this tile are done.
+\end{frame}
+
+\begin{frame}[fragile]{Epilogue Warps: Drain TMEM, Pipelined Store}
+  \begin{lstlisting}[language=C,basicstyle=\ttfamily\footnotesize]
+else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
+  mbarrier_wait_phase(tmem_full[buf], full[buf]);  // wait: TMEM data ready
+  tcgen05_ld(...);                                 // drain TMEM -> registers
+  // pack registers -> SMEM store ring -> cp.async.bulk.tensor.2d (TMA store)
+  EPI_TMEM_FREE_ARRIVE(buf);                       // signal: TMEM buffer free
+}
+  \end{lstlisting}
+  \vspace{-0.2cm}
+  \footnotesize The store ring is the epilogue half of the SMEM partition; TMA
+  drains it to HBM asynchronously.
+\end{frame}
+
 \section{2-CTA MMA}
 
 \begin{frame}{One Key Optimization: 2-CTA MMA}
@@ -939,55 +1081,9 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   \vspace{0.05cm}
   {\footnotesize Cell $= c \oplus r =$ bank group; each is one \code{int4} $=$
   \textbf{4 banks} (8 cells $=$ 32 banks) $=$ the \code{SWIZZLE\_128B} atom.
-  Shown is one phase (lanes 0--7); a 128-bit store issues as 4 identical phases,
-  so rows sharing a group never write together.}
+  Shown is one phase (lanes 0--7); A warp writes 32 rows and a 128-bit store issues as 4 identical phases.}
 \end{frame}
 
-\begin{frame}{Epilogue Concern 2: Why the Period Is 8 --- an $8\times$ Win}
-  A warp writes 32 rows, but an \code{int4} (16\,B) SMEM store moves only
-  128\,B/cycle, so it issues as \textbf{4 phases of 8 lanes}:
-  \[
-    \underbrace{16\,\text{B}}_{\mathtt{int4}} \times
-    \underbrace{8\,\text{lanes}}_{\text{per cycle}}
-    = \underbrace{128\,\text{B} = 32\,\text{banks}}_{\text{one bank cycle}}
-    = \underbrace{\mathtt{SWIZZLE\_128B}}_{\text{TMA atom}}
-  \]
-
-  \vspace{0.1cm}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.46\textwidth}
-    \centering\small
-    \begin{tabular}{ccc}
-      \toprule
-      phase & lanes & rows \\
-      \midrule
-      0 & 0--7 & 0--7 \\
-      1 & 8--15 & 8--15 \\
-      2 & 16--23 & 16--23 \\
-      3 & 24--31 & 24--31 \\
-      \bottomrule
-    \end{tabular}\\[0.15cm]
-    {\scriptsize each phase: \code{lane\,\&\,7} $=0\ldots7$, all distinct}
-
-    \column{0.52\textwidth}
-    \centering\small
-    \begin{tabular}{lcc}
-      \toprule
-       & per phase & 4 phases \\
-      \midrule
-      naive & 8-way $\to$ 8\,cyc & \textbf{32 cyc} \\
-      swizzle & conflict-free $\to$ 1\,cyc & \textbf{4 cyc} \\
-      \bottomrule
-    \end{tabular}\\[0.15cm]
-    {\scriptsize the 4 phases serialize either way --- the swizzle just makes
-    each one conflict-free}
-  \end{columns}
-
-  \vspace{0.25cm}
-  \centering
-  \small Period 8 is chosen to match the 8-lane phase $\Rightarrow$ $8\times$
-  faster SMEM packing, with the TMA$\to$HBM store coalesced either way.
-\end{frame}
 
 \begin{frame}{Epilogue Design: Staged TMA Store}
   \begin{center}
@@ -1033,6 +1129,63 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
       One natural store unit is a 64-column BF16 chunk.
     \end{center}
   \end{columns}
+\end{frame}
+
+\begin{frame}{Epilogue Design: Multiple Store Buffers}
+  Within one 64-column chunk the two phases run \textbf{in order}, not interleaved:
+
+  \vspace{0.25cm}
+  \begin{center}
+    \begin{tikzpicture}[
+        ph/.style={draw, thick, rounded corners=2pt, align=center, font=\scriptsize, minimum height=1.05cm, text width=2.4cm},
+        buf/.style={draw, thick, minimum width=0.66cm, minimum height=0.66cm, font=\scriptsize},
+        arrow/.style={-{Latex[length=2mm]}, very thick, draw=mmblue}
+      ]
+      \node[ph, fill=blue!8] (load) {\textbf{Phase 1}\\ 8$\times$\,\code{ld.x8}\\ $\to$ registers};
+      \node[ph, fill=orange!12, right=0.9cm of load] (store) {\textbf{Phase 2}\\ swizzled write\\ $+$ TMA issue};
+      \node[buf, fill=orange!8, right=0.9cm of store] (b0) {b0};
+      \node[buf, fill=orange!22, right=0.1cm of b0] (b1) {b1};
+      \node[buf, fill=orange!8, right=0.1cm of b1] (b2) {b2};
+      \node[ph, fill=teal!12, right=0.9cm of b2, text width=1.15cm, minimum height=0.66cm] (tma) {TMA\\$\to$ HBM};
+      \draw[arrow] (load) -- node[above, font=\tiny]{then} (store);
+      \draw[arrow] (store) -- node[above, font=\tiny]{grab} (b0);
+      \draw[arrow] (b2) -- (tma);
+      \node[font=\tiny, text=mmgray, below=0.04cm of load] {no buffer};
+      \node[font=\tiny, text=mmgray, below=0.04cm of b1] {$128\times64$ each};
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{0.15cm}
+  \begin{itemize}
+    \item Phase 1 reads the whole chunk into registers --- it touches only TMEM
+      and registers, so it needs \emph{no} store buffer.
+    \item Phase 2 is the only consumer of the store ring: it grabs a free
+      $128\times64$ buffer, writes it (swizzled), and hands it to TMA.
+    \item So \textbf{multiple buffering pipelines only Phase 2}: while TMA drains
+      earlier buffers to HBM, later chunks write into others. Phase 2 waits
+      (ready/free) only when no buffer is free.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Epilogue Design: From Design to Code}
+  The whole epilogue is one loop over the $BN/64$ store chunks:
+  \begin{lstlisting}[language=C, basicstyle=\ttfamily\footnotesize]
+for (int chunk = 0; chunk < BN/64; chunk++) {
+  // Phase 1: load all 64 cols of this chunk into registers
+  for (int n = 0; n < 8; n++)            // 8 x tcgen05.ld.x8
+    tcgen05_ld_x8(tmem_row + chunk*64 + n*8, reg[n]);
+  tcgen05_wait_ld();
+  wait_for_store_buffer();               // grab a free 128x64 buffer
+  // Phase 2: conflict-free SMEM write, then the TMA store
+  for (int n = 0; n < 8; n++) {
+    int swz = n ^ (row & 7);             // XOR swizzle: distinct banks
+    store_buf[stage][row][swz] = pack_bf16(reg[n]);
+  }
+  bar.sync;                              // buffer fully written
+  if (elect) tma_store(store_buf[stage], C + chunk*64);
+  stage = (stage + 1) % NUM_STORE_BUFFERS;
+}
+  \end{lstlisting}
 \end{frame}
 
 \section{Tile Sizes and Shared Memory}
@@ -1109,175 +1262,61 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   % TODO(tong): confirm the exact per-SM SMEM cap used (228 KB?).
 \end{frame}
 
-\section{From Diagram to Code}
+\section{Performance}
 
-\begin{frame}{From Diagram to Code}
-  We now connect the container diagram to the real kernel. Each warp role maps
-  to one loop that \emph{waits}, \emph{works}, then \emph{signals}:
+\begin{frame}{Performance vs cuBLAS (B200, BF16)}
+  \begin{center}
+    \small Top autotuned config per shape --- MMComposer averages
+    \textbf{$\sim$100\% of cuBLAS} (range 96--106\%) across 20 shapes.
+  \end{center}
 
-  \vspace{0.3cm}
-  \begin{table}
-    \centering\scriptsize
-    \begin{tabular}{llll}
+  \vspace{0.05cm}
+  {\scriptsize
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.4\textwidth}
+    \centering \textbf{Square ($M{=}N{=}K$)}\\[0.12cm]
+    \begin{tabular}{rrrr}
       \toprule
-      Warp & Waits on & Works & Signals \\
+      shape & cuBLAS & MMC & \% \\
       \midrule
-      TMA & \code{smem\_compute\_free\_mbar[slot]} & TMA load A/B & \code{smem\_compute\_full\_mbar[slot]} \\
-      MMA & \code{smem\_compute\_full\_mbar[slot]} & \code{tcgen05.mma} & \code{smem\_compute\_free\_mbar}, \code{tmem\_full} \\
-      Epilogue & \code{tmem\_full[buf]} & drain + TMA store & \code{tmem\_free\_mbar[buf]} \\
+      $4096^3$  & 1382 & 1354 &  98 \\
+      $5120^3$  & 1432 & 1373 &  96 \\
+      $6144^3$  & 1475 & 1447 &  98 \\
+      $7168^3$  & 1435 & 1397 &  97 \\
+      $8192^3$  & 1420 & 1453 & 102 \\
+      $9216^3$  & 1422 & 1426 & 100 \\
+      $10240^3$ & 1398 & 1390 &  99 \\
+      $11264^3$ & 1414 & 1440 & 102 \\
+      $12288^3$ & 1477 & 1472 & 100 \\
       \bottomrule
     \end{tabular}
-  \end{table}
 
-  \vspace{0.2cm}
-  The mbarriers \emph{are} the dashed signal arrows from the diagrams.
-\end{frame}
-
-\begin{frame}[fragile]{TMA Warp: Fill SMEM, Signal Compute Data Ready}
-  \begin{lstlisting}[language=C,basicstyle=\ttfamily\footnotesize]
-if (warp_id == 0 && elect_sync()) {            // TMA-load warp
-  for (int k = 0; k < num_k; k++) {
-    int slot = gk % NS;
-    // wait: compute buffer free
-    mbarrier_wait_phase(smem_compute_free_mbar[slot],
-                        smem_compute_free_phase[slot]);
-    tma_2d_load_g2(A_base(slot), A_tmap, ...);        // drain HBM -> fill A
-    tma_2d_load_g2(B_base(slot), B_tmap, ...);        //              fill B
-    // signal: compute data ready
-    mbarrier_arrive_expect_tx(smem_compute_full_mbar[slot],
-                              SLOT_BYTES);
-    gk++;
-  }
-}
-  \end{lstlisting}
-  \vspace{-0.2cm}
-  \footnotesize Wait for the output slot to be free, fill it, then signal
-  that the compute data is ready to consume.
-\end{frame}
-
-\begin{frame}[fragile]{MMA Warp: Compute Buffer Free, TMEM Data Ready}
-  \begin{lstlisting}[language=C,basicstyle=\ttfamily\footnotesize]
-else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {   // MMA warp
-  mbarrier_wait_phase(tmem_free_mbar[buf],
-                      tmem_free_phase[buf]);        // wait: TMEM buffer free
-  for (int k = 0; k < num_k; k++) {
-    int slot = gk % NS;
-    // wait: compute data ready
-    mbarrier_wait_phase(smem_compute_full_mbar[slot],
-                        smem_compute_full_phase[slot]);
-    issue_mma_chain(d_tmem, A_base(slot), B_base(slot), ...);
-    // signal: compute buffer free
-    tcgen05_commit_mcast_g2(smem_compute_free_mbar[slot],
-                            cta_mask);
-    gk++;
-  }
-  tcgen05_commit_mcast_g2(tmem_full[buf], cta_mask); // signal: TMEM data ready
-}
-  \end{lstlisting}
-  \vspace{-0.2cm}
-  \footnotesize \code{tmem\_full} is the concrete mbarrier for
-  \emph{TMEM data ready}; it fires only after all MMAs for this tile are done.
-\end{frame}
-
-\begin{frame}[fragile]{Epilogue Warps: Drain TMEM, Pipelined Store}
-  \begin{lstlisting}[language=C,basicstyle=\ttfamily\footnotesize]
-else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
-  mbarrier_wait_phase(tmem_full[buf], full[buf]);  // wait: TMEM data ready
-  tcgen05_ld(...);                                 // drain TMEM -> registers
-  // pack registers -> SMEM store ring -> cp.async.bulk.tensor.2d (TMA store)
-  EPI_TMEM_FREE_ARRIVE(buf);                       // signal: TMEM buffer free
-}
-  \end{lstlisting}
-  \vspace{-0.2cm}
-  \footnotesize The store ring is the epilogue half of the SMEM partition; TMA
-  drains it to HBM asynchronously.
-\end{frame}
-
-\section{MMComposer}
-
-\begin{frame}{What MMComposer Generates}
-  MMComposer is a code generator: from a knob configuration it emits a
-  specialized \code{kernel.cu} (and a self-contained host driver).
-
-  \begin{itemize}
-    \item Skeletons are organized as \textbf{tiers}:
-      \begin{itemize}
-        \item Tier 1 --- baseline (no warp specialization).
-        \item Tier 2 --- multi-stage + warp specialization (single CTA).
-        \item Tier 3 --- + 2-CTA cluster MMA.
-      \end{itemize}
-    \item Each knob (tile size, stages, epilogue mode, \ldots) is substituted
-      into the skeleton at generation time.
-    \item The generated kernel is exactly the orchestration pipeline from the
-      earlier diagrams.
-  \end{itemize}
-\end{frame}
-
-\begin{frame}{Using MMComposer: WebUI Knobs}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.5\textwidth}
-    \textbf{Geometry}
-    \begin{itemize}
-      \item \code{BM} (128), \code{BN} (64--512), \code{BK} (64)
-      \item \code{NS}: pipeline depth (2--7)
-      \item \code{NUM\_WARPS} (4/8/16), \code{GROUP\_SIZE\_M}
-    \end{itemize}
-    \textbf{Structure}
-    \begin{itemize}
-      \item Multi-stage + warp specialization
-      \item 2-CTA cluster MMA
-      \item Persistent grid
-    \end{itemize}
-    \column{0.5\textwidth}
-    \textbf{Epilogue}
-    \begin{itemize}
-      \item Epilogue overlap (TMEM double-buffer)
-      \item Pipelined TMA-store epilogue
-      \item \code{TMA\_STORE\_STAGES} (1--4)
-      \item Split writeback, L1 no-allocate
-      \item Single-TMEM accumulator
-    \end{itemize}
+    \column{0.6\textwidth}
+    \centering \textbf{Rectangular ($M{\times}N{\times}K$)}\\[0.12cm]
+    \begin{tabular}{rrrr}
+      \toprule
+      shape & cuBLAS & MMC & \% \\
+      \midrule
+      $2048{\times}36864{\times}12288$ & 1517 & 1480 &  98 \\
+      $2048{\times}49152{\times}12288$ & 1366 & 1390 & 102 \\
+      $4096{\times}12288{\times}4096$  & 1486 & 1458 &  98 \\
+      $4096{\times}16384{\times}4096$  & 1512 & 1529 & 101 \\
+      $8192{\times}24576{\times}8192$  & 1490 & 1507 & 101 \\
+      $8192{\times}32768{\times}8192$  & 1404 & 1458 & 104 \\
+      $16384{\times}4608{\times}768$   & 1467 & 1432 &  98 \\
+      $32768{\times}4608{\times}768$   & 1461 & 1423 &  97 \\
+      $32768{\times}9216{\times}768$   & 1428 & 1415 &  99 \\
+      $32768{\times}12288{\times}768$  & 1321 & 1401 & 106 \\
+      $65536{\times}2304{\times}768$   & 1460 & 1424 &  98 \\
+      \bottomrule
+    \end{tabular}
   \end{columns}
+  }
 
-  \vspace{0.2cm}
-  \footnotesize Run with \code{streamlit run webui/app.py}.
-\end{frame}
-
-\begin{frame}[fragile]{Using MMComposer: CLI}
-  Generate a kernel or host driver from a config JSON:
-  \begin{lstlisting}[language=bash]
-python -m codegen kernel config.json   > kernel.cu
-python -m codegen host   config.json   > host.py
-  \end{lstlisting}
-  \begin{lstlisting}
-{
-  "skeleton": "tier3_cluster_swizzle",
-  "BM": 128, "BN": 256, "BK": 64,
-  "NS": 5, "GROUP_SIZE_M": 4, "NUM_WARPS": 8,
-  "EPILOGUE_OVERLAP": 1, "EPILOGUE_TMA_PIPELINED": 1,
-  "TMA_STORE_STAGES": 2, "TWO_CTA": 1
-}
-  \end{lstlisting}
-\end{frame}
-
-\begin{frame}[fragile]{Autotuning}
-  Sweep the knob grid on a B200 and rank by TFLOPS vs cuBLAS:
-  \begin{lstlisting}[language=bash]
-python webui/autotune.py 8192                    # square 8192^3
-python webui/autotune.py 32768x4608x768          # MxNxK
-python webui/autotune.py 8192 --scope production # filtered grid
-  \end{lstlisting}
-  \begin{lstlisting}
-cuBLAS reference: 1567 TFLOPS
-  #  TFLOPS  %cuBLAS   WS 2CTA  BN  NS GSM  NW  TMS
----- ------- ------- --- ----  --- -- --- --  ---
-  1  1456.0  92.9%   on   on  256  5   4   4   2
-  2  1398.0  89.2%   on   on  256  4   4   4   2
-  3  1345.0  85.8%   on   on  512  4   8   8   2
-  \end{lstlisting}
-  \vspace{-0.2cm}
-  \footnotesize \emph{production} scope filters to warp-spec, \code{BN}$\in\{256,512\}$,
-  \code{NS}$\ge 3$.
+  \vspace{0.12cm}
+  {\scriptsize TFLOPS on B200 (BF16). cuBLAS = vendor reference; MMC = MMComposer
+  top autotuned config.}
 \end{frame}
 
 
