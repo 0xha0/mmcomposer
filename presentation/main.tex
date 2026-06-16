@@ -61,6 +61,16 @@
   \end{itemize}
 \end{frame}
 
+\begin{frame}[plain]
+  \begin{center}
+    \vspace{1.8cm}
+    {\usebeamercolor[fg]{title}\Large\bfseries Design}
+
+    \vspace{0.35cm}
+    {\large High-Level Design}
+  \end{center}
+\end{frame}
+
 \section{Background}
 
 
@@ -583,55 +593,51 @@
   \end{table}
 \end{frame}
 
-\begin{frame}{Deriving the Warp Roles}
-  \begin{table}
-    \centering
-    \small
-    \begin{tabular}{llll}
-      \toprule
-      Worker & Drains & Fills & Key signal \\
-      \midrule
-      TMA warp & HBM tile & SMEM compute ring & compute data ready \\
-      MMA warp & SMEM compute ring & TMEM &
-        \begin{tabular}[c]{@{}l@{}}compute buffer free\\TMEM data ready\end{tabular} \\
-      Epilogue warp & TMEM & registers & TMEM buffer free \\
-      TMA store path & SMEM store ring & HBM output & store slot free \\
-      \bottomrule
-    \end{tabular}
-  \end{table}
-
-  \vspace{0.2cm}
-  The same rule repeats: drain an input container, fill an output container,
-  then signal readiness, completion, or resource reuse.
-\end{frame}
-
 \section{2-CTA MMA}
 
-\begin{frame}{One Optimization the Model Does Not Imply: 2-CTA MMA}
-  The orchestration model already covers warp specialization, pipelining,
-  SMEM/TMEM reuse, and epilogue overlap. One major B200 optimization is
-  \emph{not} implied by it:
+\begin{frame}{One Key Optimization: 2-CTA MMA}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.43\textwidth}
+    \vspace{0.35cm}
+    \begin{itemize}
+      \item Two CTAs form one cluster.
+      \item Each CTA keeps one A slice and half of B in SMEM.
+      \item One group-2 MMA produces a larger, higher-AI output tile.
+    \end{itemize}
 
-  \vspace{0.3cm}
-  \begin{center}
-    \textbf{2-CTA MMA}: two CTAs in a cluster cooperate on one MMA.
-  \end{center}
+    \vspace{0.25cm}
+    \small
+    Benefit: \textbf{higher arithmetic intensity}. The cluster computes a
+    larger tile while B storage is split across the CTAs.
 
-  \vspace{0.3cm}
-  \begin{itemize}
-    \item Form a cluster of 2 CTAs (\code{\_\_cluster\_dims\_\_(2,1,1)}).
-    \item Issue a single \code{tcgen05.mma.cta\_group::2} across the pair.
-    \item The pair produces a $2\,BM \times BN$ output tile per MMA.
-  \end{itemize}
+    \column{0.53\textwidth}
+    \begin{center}
+      \begin{tikzpicture}[
+          cta/.style={draw, thick, rounded corners=1pt, minimum width=2.0cm, minimum height=1.0cm, align=center, font=\scriptsize},
+          op/.style={draw, thick, rounded corners=1pt, minimum width=2.1cm, minimum height=0.8cm, align=center, font=\scriptsize},
+          outputtile/.style={draw, thick, minimum width=2.4cm, minimum height=1.25cm, align=center, font=\scriptsize},
+          arrow/.style={-{Latex[length=2mm]}, very thick, draw=mmblue}
+        ]
+        \node[cta, fill=teal!12] (cta0) at (-1.35,1.0) {CTA 0\\A slice + B half};
+        \node[cta, fill=teal!20] (cta1) at (-1.35,-0.35) {CTA 1\\A slice + B half};
+        \node[op, fill=green!12] (mma) at (1.35,0.32) {group-2\\MMA};
+        \node[outputtile, fill=orange!12] (tile) at (4.05,0.32) {$2BM \times BN$\\higher-AI tile};
+
+        \draw[arrow] (cta0.east) -- (mma.west);
+        \draw[arrow] (cta1.east) -- (mma.west);
+        \draw[arrow] (mma.east) -- (tile.west);
+      \end{tikzpicture}
+    \end{center}
+  \end{columns}
 \end{frame}
 
 \begin{frame}{2-CTA MMA: Geometry}
   \begin{columns}[T,onlytextwidth]
     \column{0.52\textwidth}
     \begin{itemize}
-      \item Each CTA owns \textbf{half of B}: $BN_{\text{local}} = BN/2$.
-      \item Both CTAs load the \textbf{full A} rows for their $BM$.
-      \item Per-CTA SMEM per slot drops from 48\,KB to \textbf{32\,KB} (at $BN{=}256$).
+      \item Each CTA loads its $BM \times BK$ slice of A.
+      \item Each CTA loads a $BK \times BN/2$ slice of B.
+      \item At $BN{=}256$, per-CTA SMEM per slot drops from \textbf{48\,KB} to \textbf{32\,KB}.
       \item TMA loads use \code{.cta\_group::2}; the \code{tcgen05.commit}
         multicasts the completion signal to both CTAs.
     \end{itemize}
@@ -691,23 +697,360 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   \footnotesize Source: \code{webui/kernels/tier3\_cluster\_swizzle/kernel.cu}.
 \end{frame}
 
+\begin{frame}{Tradeoff of Double TMEM Buffering}
+  \small
+  \begin{center}
+    Tile width trades off \textbf{overlap} against \textbf{arithmetic intensity}.
+    \[
+      \text{2-CTA MMA, } BM{=}128:\quad \text{AI} = \frac{256BN}{256 + BN}
+    \]
+  \end{center}
+
+  \vspace{-0.25cm}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.47\textwidth}
+    \begin{center}
+      \begin{tikzpicture}[
+          box/.style={draw, thick, rounded corners=1pt, minimum width=4.55cm, minimum height=2.45cm, align=center}
+        ]
+        \node[box, fill=teal!10] {
+          \textbf{$BN{=}256$}\\[0.18cm]
+          \textbf{MORE OVERLAP}\\[0.18cm]
+          double TMEM buffer\\[0.14cm]
+          lower AI: 128 flop/B
+        };
+      \end{tikzpicture}
+    \end{center}
+
+    \column{0.47\textwidth}
+    \begin{center}
+      \begin{tikzpicture}[
+          box/.style={draw, thick, rounded corners=1pt, minimum width=4.55cm, minimum height=2.45cm, align=center}
+        ]
+        \node[box, fill=orange!12] {
+          \textbf{$BN{=}512$}\\[0.18cm]
+          \textbf{HIGHER AI}\\[0.18cm]
+          single TMEM buffer\\[0.14cm]
+          delayed reuse: 171 flop/B
+        };
+      \end{tikzpicture}
+    \end{center}
+  \end{columns}
+
+  \vspace{0.28cm}
+  \centering
+  \small For medium-to-large square GEMMs, higher AI often wins.
+\end{frame}
+
+\begin{frame}{Epilogue Design: Three Phases}
+  So far we have shown only the first phase of the epilogue. In full it has
+  \textbf{three}:
+
+  \vspace{0.35cm}
+  \begin{center}
+    \begin{tikzpicture}[
+        box/.style={draw, thick, rounded corners=1pt, minimum width=1.7cm, minimum height=0.8cm, align=center, font=\small},
+        arrow/.style={-{Latex[length=2mm]}, very thick, draw=mmblue}
+      ]
+      \node[box, fill=green!10] (tmem) {TMEM};
+      \node[box, fill=blue!8, right=1.7cm of tmem] (regs) {registers};
+      \node[box, fill=orange!12, right=1.7cm of regs] (smem) {SMEM\\staging};
+      \node[box, fill=gray!10, right=1.7cm of smem] (hbm) {HBM};
+      \draw[arrow] (tmem) -- node[above, font=\scriptsize]{\textbf{1} \code{tcgen05.ld}} (regs);
+      \draw[arrow] (regs) -- node[above, font=\scriptsize]{\textbf{2} store} (smem);
+      \draw[arrow] (smem) -- node[above, font=\scriptsize]{\textbf{3} TMA store} (hbm);
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{0.35cm}
+  \begin{enumerate}
+    \item \textbf{Drain TMEM into registers} with \code{tcgen05.ld} (already seen).
+    \item \textbf{Write registers into an SMEM staging buffer}.
+    \item \textbf{Issue a TMA store} from SMEM to HBM.
+  \end{enumerate}
+
+  \vspace{0.2cm}
+  Phases 2 and 3 are forced on us by \emph{how TMEM is laid out}.
+\end{frame}
+
+\begin{frame}{Epilogue Design: TMEM Layout}
+  TMEM is laid out for MMA accumulation: \code{tcgen05.ld} reads it
+  \textbf{one column at a time}, with each \textbf{thread mapped to a row}.
+
+  \vspace{0.2cm}
+  \begin{center}
+    \begin{tikzpicture}[
+        cell/.style={draw=black!45, minimum width=0.46cm, minimum height=0.40cm},
+        tlabel/.style={font=\scriptsize\ttfamily, anchor=east},
+        reg/.style={draw, thick, rounded corners=1pt, fill=orange!22, minimum width=1.2cm, minimum height=0.40cm, font=\scriptsize},
+        arrow/.style={-{Latex[length=1.6mm]}, draw=mmsignal}
+      ]
+      \node[font=\scriptsize, text=mmgray] at (-2.95,1.85) {columns ($N$ direction) $\rightarrow$};
+      \node[rotate=90, font=\scriptsize\bfseries, text=mmblue] at (-5.75,-0.05) {threads $\to$ rows};
+
+      \foreach \r in {0,...,7} {
+        \node[tlabel] at (-5.05,1.45 - 0.42*\r) {T\r};
+        \foreach \c in {0,...,7} {
+          \ifnum\c=5
+            \node[cell, fill=orange!38] at (-4.6 + 0.46*\c, 1.45 - 0.42*\r) {};
+          \else
+            \node[cell, fill=teal!12] at (-4.6 + 0.46*\c, 1.45 - 0.42*\r) {};
+          \fi
+        }
+      }
+
+      \draw[-{Latex[length=2mm]}, very thick, draw=mmsignal]
+        (-4.6 + 0.46*5, 2.15) -- (-4.6 + 0.46*5, 1.78);
+      \node[font=\scriptsize\bfseries, text=mmsignal, anchor=south]
+        at (-4.6 + 0.46*5, 2.18) {one \code{tcgen05.ld}};
+
+      % registers per thread on the right
+      \node[font=\scriptsize, text=mmgray] at (2.45,1.95) {registers};
+      \foreach \r in {0,...,7} {
+        \node[reg] (rg\r) at (2.45,1.45 - 0.42*\r) {row \r};
+        \draw[arrow] (-4.6 + 0.46*5 + 0.23, 1.45 - 0.42*\r) -- (rg\r.west);
+      }
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{-0.05cm}
+  \small A load distributes one column across the warp's lanes; iterating, each
+  \textbf{thread $t$ ends up owning row $t$} --- not a contiguous run of
+  neighboring threads' outputs.
+\end{frame}
+
+\begin{frame}{Epilogue Design: Two Separate Concerns}
+  Storing the result tile raises two \emph{independent} problems:
+
+  \vspace{0.35cm}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.5\textwidth}
+    \begin{center}\textbf{1. Coalesced global write}\end{center}
+    \begin{itemize}
+      \item A direct register $\to$ HBM store is row-strided $\Rightarrow$
+        uncoalesced.
+      \item \textbf{Design choice}: make the TMA store unit a $128\times 64$
+        tile --- the 64 contiguous columns give one coalesced GMEM write.
+    \end{itemize}
+
+    \column{0.5\textwidth}
+    \begin{center}\textbf{2. Populating the SMEM tile}\end{center}
+    \begin{itemize}
+      \item Fill that $128\times 64$ SMEM buffer from TMEM with
+        \code{tcgen05.ld}.
+      \item Each lane writes its own row $\Rightarrow$ bank conflicts; an
+        \textbf{XOR swizzle} makes the write conflict-free.
+    \end{itemize}
+  \end{columns}
+
+  \vspace{0.4cm}
+  \centering
+  \small Concern 1 is about HBM bandwidth; concern 2 is about on-chip SMEM banks.
+\end{frame}
+
+\begin{frame}{Epilogue Concern 1: Coalesced Global Write}
+  Because each thread owns a \emph{row}, a direct register $\to$ HBM store makes
+  one warp scatter across many rows at once.
+
+  \vspace{0.3cm}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.5\textwidth}
+    \begin{center}
+      \textbf{\textcolor{red!70!black}{Direct store}}\\[0.2cm]
+      \begin{tikzpicture}[seg/.style={draw, minimum width=0.34cm, minimum height=0.34cm, fill=red!20}]
+        \draw[-{Latex[length=1.6mm]}, thick] (-0.1,0) -- (5.0,0) node[right]{\scriptsize HBM addr};
+        \foreach \i in {0,...,4} {
+          \node[seg] at (0.95*\i + 0.2, 0.5) {};
+          \node[font=\scriptsize] at (0.95*\i + 0.2, 0.95) {T\i};
+        }
+      \end{tikzpicture}\\[0.15cm]
+      {\scriptsize threads land $N$ apart\\ $\Rightarrow$ \textbf{uncoalesced}}
+    \end{center}
+    \column{0.5\textwidth}
+    \begin{center}
+      \textbf{\textcolor{green!45!black}{Via SMEM staging}}\\[0.2cm]
+      \begin{tikzpicture}[seg/.style={draw, minimum width=0.34cm, minimum height=0.34cm, fill=green!25}]
+        \draw[-{Latex[length=1.6mm]}, thick] (-0.1,0) -- (3.4,0) node[right]{\scriptsize HBM addr};
+        \foreach \i in {0,...,4} {
+          \node[seg] at (0.37*\i + 0.25, 0.5) {};
+          \node[font=\scriptsize] at (0.37*\i + 0.25, 0.95) {T\i};
+        }
+      \end{tikzpicture}\\[0.15cm]
+      {\scriptsize contiguous addresses\\ $\Rightarrow$ \textbf{coalesced}}
+    \end{center}
+  \end{columns}
+
+  \vspace{0.35cm}
+  \begin{itemize}
+    \item Route each $BM \times 64$ chunk through an SMEM tile, then issue one
+      \textbf{TMA store}: TMA emits a coalesced 2D GMEM write \emph{regardless}
+      of the in-SMEM layout.
+    \item So GMEM coalescing is solved by the 64-column TMA box --- not by how
+      the threads wrote into SMEM.
+    \item But the register $\to$ SMEM write is \emph{not} free: it has its own
+      bank-conflict hazard (next).
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Epilogue Concern 2: Filling the $128\times64$ SMEM Buffer}
+  We fill it with \code{tcgen05.ld.x8} chunks (8 cols $\times$ 32 lanes). A naive
+  write collides on the \textbf{same banks}; the swizzle $n \oplus \text{(row \&
+  7)}$ spreads them.
+
+  \vspace{0.05cm}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.5\textwidth}
+    \begin{center}
+      \textbf{Naive: column $\to$ fixed bank}\\[0.15cm]
+      \begin{tikzpicture}[scale=0.85, transform shape, cell/.style={draw=black!25, minimum width=0.44cm, minimum height=0.38cm}]
+        \foreach \r in {0,...,7} {
+          \node[font=\tiny\ttfamily, anchor=east] at (-0.12, -0.40*\r) {T\r};
+          \foreach \c in {0,...,7} {
+            \pgfmathtruncatemacro{\bank}{\c}
+            \ifcase\bank \def\bc{red!35}\or\def\bc{orange!45}\or\def\bc{yellow!65}\or\def\bc{green!45}\or\def\bc{teal!45}\or\def\bc{cyan!45}\or\def\bc{blue!35}\or\def\bc{violet!45}\fi
+            \node[cell, fill=\bc] at (0.46*\c, -0.40*\r) {\tiny\bfseries\bank};
+          }
+        }
+        \draw[red, very thick] (0.46*2-0.23,0.20) rectangle (0.46*2+0.23,-0.40*7-0.20);
+      \end{tikzpicture}\\[0.1cm]
+      {\scriptsize a column hits \textbf{one bank}\\ $\Rightarrow$ 8-way conflict}
+    \end{center}
+    \column{0.5\textwidth}
+    \begin{center}
+      \textbf{Swizzled: $n \oplus \text{(row \& 7)}$}\\[0.15cm]
+      \begin{tikzpicture}[scale=0.85, transform shape, cell/.style={draw=black!25, minimum width=0.44cm, minimum height=0.38cm}]
+        \foreach \r in {0,...,7} {
+          \node[font=\tiny\ttfamily, anchor=east] at (-0.12, -0.40*\r) {T\r};
+          \foreach \c in {0,...,7} {
+            \pgfmathtruncatemacro{\bz}{mod(mod(\r,2)+mod(\c,2),2)}
+            \pgfmathtruncatemacro{\bo}{mod(mod(int(\r/2),2)+mod(int(\c/2),2),2)}
+            \pgfmathtruncatemacro{\bt}{mod(mod(int(\r/4),2)+mod(int(\c/4),2),2)}
+            \pgfmathtruncatemacro{\bank}{\bz+2*\bo+4*\bt}
+            \ifcase\bank \def\bc{red!35}\or\def\bc{orange!45}\or\def\bc{yellow!65}\or\def\bc{green!45}\or\def\bc{teal!45}\or\def\bc{cyan!45}\or\def\bc{blue!35}\or\def\bc{violet!45}\fi
+            \node[cell, fill=\bc] at (0.46*\c, -0.40*\r) {\tiny\bfseries\bank};
+          }
+        }
+        \draw[red, very thick] (0.46*2-0.23,0.20) rectangle (0.46*2+0.23,-0.40*7-0.20);
+      \end{tikzpicture}\\[0.1cm]
+      {\scriptsize each row $\to$ a \textbf{different bank}\\ $\Rightarrow$ conflict-free}
+    \end{center}
+  \end{columns}
+
+  \vspace{0.05cm}
+  {\footnotesize Cell $= c \oplus r =$ bank group; each is one \code{int4} $=$
+  \textbf{4 banks} (8 cells $=$ 32 banks) $=$ the \code{SWIZZLE\_128B} atom.
+  Shown is one phase (lanes 0--7); a 128-bit store issues as 4 identical phases,
+  so rows sharing a group never write together.}
+\end{frame}
+
+\begin{frame}{Epilogue Concern 2: Why the Period Is 8 --- an $8\times$ Win}
+  A warp writes 32 rows, but an \code{int4} (16\,B) SMEM store moves only
+  128\,B/cycle, so it issues as \textbf{4 phases of 8 lanes}:
+  \[
+    \underbrace{16\,\text{B}}_{\mathtt{int4}} \times
+    \underbrace{8\,\text{lanes}}_{\text{per cycle}}
+    = \underbrace{128\,\text{B} = 32\,\text{banks}}_{\text{one bank cycle}}
+    = \underbrace{\mathtt{SWIZZLE\_128B}}_{\text{TMA atom}}
+  \]
+
+  \vspace{0.1cm}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.46\textwidth}
+    \centering\small
+    \begin{tabular}{ccc}
+      \toprule
+      phase & lanes & rows \\
+      \midrule
+      0 & 0--7 & 0--7 \\
+      1 & 8--15 & 8--15 \\
+      2 & 16--23 & 16--23 \\
+      3 & 24--31 & 24--31 \\
+      \bottomrule
+    \end{tabular}\\[0.15cm]
+    {\scriptsize each phase: \code{lane\,\&\,7} $=0\ldots7$, all distinct}
+
+    \column{0.52\textwidth}
+    \centering\small
+    \begin{tabular}{lcc}
+      \toprule
+       & per phase & 4 phases \\
+      \midrule
+      naive & 8-way $\to$ 8\,cyc & \textbf{32 cyc} \\
+      swizzle & conflict-free $\to$ 1\,cyc & \textbf{4 cyc} \\
+      \bottomrule
+    \end{tabular}\\[0.15cm]
+    {\scriptsize the 4 phases serialize either way --- the swizzle just makes
+    each one conflict-free}
+  \end{columns}
+
+  \vspace{0.25cm}
+  \centering
+  \small Period 8 is chosen to match the 8-lane phase $\Rightarrow$ $8\times$
+  faster SMEM packing, with the TMA$\to$HBM store coalesced either way.
+\end{frame}
+
+\begin{frame}{Epilogue Design: Staged TMA Store}
+  \begin{center}
+    \small Phases 2--3: once the store tile is regular, TMA can drain it asynchronously.
+  \end{center}
+
+  \vspace{0.25cm}
+  \begin{center}
+    \begin{tikzpicture}[
+        stage/.style={draw, thick, rounded corners=1pt, minimum width=1.75cm, minimum height=0.78cm, align=center, font=\small},
+        wide/.style={draw, thick, rounded corners=1pt, minimum width=2.35cm, minimum height=0.78cm, align=center, font=\small},
+        arrow/.style={-{Latex[length=2mm]}, very thick, draw=mmblue}
+      ]
+      \node[stage, fill=green!10] (tmem) at (-4.55,0) {TMEM};
+      \node[stage, fill=blue!8] (regs) at (-2.45,0) {registers};
+      \node[wide, fill=orange!14] (smem) at (0.05,0) {SMEM\\store ring};
+      \node[stage, fill=teal!12] (tma) at (2.65,0) {TMA\\store};
+      \node[stage, fill=gray!10] (hbm) at (4.75,0) {HBM};
+
+      \draw[arrow] (tmem) -- (regs);
+      \draw[arrow] (regs) -- (smem);
+      \draw[arrow] (smem) -- (tma);
+      \draw[arrow] (tma) -- (hbm);
+
+      \node[draw, thick, fill=orange!8, minimum width=0.78cm, minimum height=0.42cm] at (-0.86,-1.02) {};
+      \node[draw, thick, fill=orange!18, minimum width=0.78cm, minimum height=0.42cm] at (0.05,-1.02) {};
+      \node[draw, thick, fill=orange!8, minimum width=0.78cm, minimum height=0.42cm] at (0.96,-1.02) {};
+      \node[font=\small, text=mmgray] at (0.05,-1.48) {each buffer = $BM \times 64$ BF16};
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{0.25cm}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.48\textwidth}
+    \begin{center}
+      \textbf{Why stage through SMEM?}\\[0.12cm]
+      Convert fragment-style TMEM drains into a regular store tile.
+    \end{center}
+
+    \column{0.48\textwidth}
+    \begin{center}
+      \textbf{Why TMA store?}\\[0.12cm]
+      One natural store unit is a 64-column BF16 chunk.
+    \end{center}
+  \end{columns}
+\end{frame}
+
 \section{Tile Sizes and Shared Memory}
 
 \begin{frame}{Framework Choice: Disjoint SMEM}
   There are several valid ways to share on-chip storage between compute and
-  epilogue. In this talk, we will use one common framework:
+  epilogue. This talk uses one concrete framework:
 
   \begin{itemize}
     \item Compute uses a dedicated SMEM ring buffer for A/B tiles.
-    \item The epilogue is \textbf{always a pipelined TMA store}: it packs results
-      into a separate SMEM store ring buffer and lets TMA push tiles to HBM.
+    \item The epilogue uses a \textbf{pipelined TMA store}: it packs results into
+      a separate SMEM store ring buffer and lets TMA push tiles to HBM.
     \item The number of TMA store pipeline stages is a tunable parameter.
   \end{itemize}
 
   \vspace{0.2cm}
-  This is not the only possible design, but it is a clean default that works
-  well across many shapes. Its consequence: shared memory splits into
-  \textbf{two} rings, and 2-CTA tile sizes set how big each one is.
+  Consequence: shared memory splits into \textbf{two} rings, and 2-CTA tile
+  sizes set how big each one is.
 \end{frame}
 
 \begin{frame}{Partitioning Shared Memory}
