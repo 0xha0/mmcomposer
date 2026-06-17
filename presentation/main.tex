@@ -1474,6 +1474,25 @@ for (int p = 0; p < (BN/64)/2; p++) {          // loop over chunk PAIRS
   \end{itemize}
 \end{frame}
 
+\begin{frame}{Future Direction: Epilogue Fusion as a Pattern}
+  SwiGLU is just one instance. The epilogue template could expose a general
+  \textbf{fusion hook}, run per $128\times64$ chunk:
+
+  \vspace{0.15cm}
+  \begin{enumerate}
+    \item optionally \textbf{load extra inputs} into the chunk buffer (e.g. a
+      residual or bias from HBM);
+    \item apply \textbf{custom math} to the TMEM chunk (and those inputs);
+    \item emit \textbf{one or more stores}.
+  \end{enumerate}
+
+  \vspace{0.25cm}
+  The framework keeps supplying the hard parts --- TMEM drain, XOR swizzle,
+  staged TMA store, pipelining --- and the user writes only the fusion. That is
+  effectively a small \textbf{DSL for epilogue fusions}: bias$+$activation,
+  residual add, gated activations, quantization, \ldots
+\end{frame}
+
 \begin{frame}{Acknowledgements}
   \vspace{1.4cm}
   \begin{center}
