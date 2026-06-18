@@ -1378,12 +1378,11 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
       (\code{SWIZZLE\_128B}) --- one atom is $128$\,B $= 64$ bf16, which fixes the
       inner load box to $64$ --- so the subsequent MMA reads SMEM
       bank-conflict-free.
-    \item \textbf{Completion = arrivals + bytes.} The slot's \code{mbarrier} holds
-      two counters: an \textbf{arrival count}, decremented by an \code{arrive}
-      \emph{instruction} (software), and a \textbf{byte count}, armed by
-      \code{expect\_tx} (software) and credited by the TMA \emph{engine} as data
-      lands (hardware). When both reach zero the hardware \textbf{auto-flips the
-      phase} --- the data-ready signal, no polling.
+    \item \textbf{Data-ready signal.} The producer arms the slot's \code{mbarrier}
+      with the expected byte count (\code{arrive.expect\_tx}, software) and
+      \emph{continues without blocking}. The TMA \emph{engine} credits bytes as
+      the data lands; once the count is met the hardware \textbf{auto-flips the
+      barrier's phase} --- the data-ready signal, no polling.
     \item An \textbf{$NS$-deep} SMEM ring lets loads run ahead of the MMA.
   \end{itemize}
 \end{frame}
