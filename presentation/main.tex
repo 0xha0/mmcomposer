@@ -67,6 +67,67 @@
 
 \section{Background}
 
+\begin{frame}{GEMM: the Core Operation}
+  A \textbf{GEMM} (general matrix multiply) computes
+  \[
+    \underbrace{C}_{M\times N} \;=\; \underbrace{A}_{M\times K}\,\cdot\,
+    \underbrace{B}_{K\times N},
+    \qquad C_{ij} = \sum_{k=1}^{K} A_{ik}\,B_{kj}.
+  \]
+  \begin{itemize}
+    \item It is the workhorse of ML --- every linear layer and attention
+      projection is a GEMM.
+    \item Three sizes: \textbf{$M$} (output rows), \textbf{$N$} (output columns),
+      \textbf{$K$} (the contracted ``inner'' dimension).
+    \item Each of the $M\times N$ outputs sums $K$ products --- a lot of reuse of
+      $A$ and $B$, which is what makes tiling pay off.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Tiling: Where $BM$, $BN$, $BK$ Come From}
+  The output is computed in \textbf{tiles}. One CTA (thread block) owns one
+  $BM\times BN$ output tile and sweeps $K$ in $BK$-wide chunks:
+
+  \vspace{0.05cm}
+  \begin{center}
+    \begin{tikzpicture}[scale=0.74, transform shape, font=\scriptsize,
+        blk/.style={draw=black!45, fill=blue!6},
+        hl/.style={draw=black!45, fill=teal!25},
+        tile/.style={draw, very thick, fill=orange!35},
+        dim/.style={font=\scriptsize, text=mmgray}]
+      % C [M x N]: 4x4 tiles of 0.7
+      \foreach \i in {0,...,3} \foreach \j in {0,...,3}
+        \draw[blk] (\i*0.7,\j*0.7) rectangle (\i*0.7+0.7,\j*0.7+0.7);
+      \node[tile, minimum width=0.69cm, minimum height=0.69cm] at (1.05,1.75) {};
+      \node[dim] at (1.4,-0.35) {$C\;[M\times N]$};
+      % A [M x K] to the left (width = K)
+      \draw[blk] (-2.1,0) rectangle (-0.4,2.8);
+      \draw[hl]  (-2.1,1.4) rectangle (-0.4,2.1);
+      \node[dim, rotate=90] at (-2.45,1.4) {$A\;[M\times K]$};
+      % B [K x N] on top (height = K)
+      \draw[blk] (0,3.1) rectangle (2.8,4.5);
+      \draw[hl]  (0.7,3.1) rectangle (1.4,4.5);
+      \node[dim] at (1.4,4.8) {$B\;[K\times N]$};
+      % BK sub-chunks along K (dashed) in the A band
+      \foreach \x in {-1.675,-1.25,-0.825} \draw[densely dashed, black!40] (\x,1.4) -- (\x,2.1);
+      \draw[{Latex}-{Latex}, mmgray] (-2.1,2.32) -- (-1.675,2.32);
+      \node[dim] at (-1.89,2.55) {$BK$};
+      % BM, BN on the C tile
+      \draw[{Latex}-{Latex}, mmgray] (1.78,1.4) -- (1.78,2.1);
+      \node[dim] at (2.0,1.75) {$BM$};
+      \draw[{Latex}-{Latex}, mmgray] (0.7,2.32) -- (1.4,2.32);
+      \node[dim] at (1.05,2.55) {$BN$};
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{0.05cm}
+  \begin{itemize}
+    \item \textbf{$BM\times BN$} --- the output tile one CTA produces (a row band
+      of $A$ $\times$ a column band of $B$).
+    \item \textbf{$BK$} --- the $K$-slice loaded per step (an $A$ tile
+      $BM{\times}BK$ and a $B$ tile $BK{\times}BN$); loop over the $K/BK$ chunks.
+  \end{itemize}
+\end{frame}
 
 \begin{frame}{GEMM Breakdown}
   A GEMM kernel has two major phases: \textbf{compute} and \textbf{epilogue}.
