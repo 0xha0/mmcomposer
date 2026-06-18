@@ -1134,26 +1134,34 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   Don't move the whole tile at once --- \textbf{slice it into 64-column strips}
   and stream them one at a time.
 
-  \vspace{0.3cm}
+  \vspace{0.25cm}
   \begin{center}
-  \begin{tikzpicture}[font=\small]
+  \begin{tikzpicture}[font=\scriptsize, scale=0.85, transform shape,
+      b/.style={draw, thick, rounded corners=1pt, align=center, minimum height=1.05cm},
+      ar/.style={-{Latex[length=2mm]}, very thick, draw=mmblue}]
+    % TMEM tile sliced into 4 strips
     \foreach \i in {0,1,2,3} {
-      \node[draw, thick, fill=green!10, minimum width=1.0cm, minimum height=2.4cm]
-        (s\i) at (\i*1.0,0) {};
+      \node[draw, thick, fill=green!10, minimum width=0.5cm, minimum height=2.0cm]
+        (s\i) at (\i*0.5,0) {};
     }
-    \node[font=\scriptsize] at (1.5,1.55) {$128\times256$ TMEM tile};
-    \node[font=\scriptsize] at (1.5,-1.55) {4 strips of 64 cols \;(8 if $BN{=}512$)};
-    \node[draw, thick, fill=blue!8, minimum width=2.2cm, minimum height=1.1cm,
-          align=center, right=2.6cm of s3] (regs)
-      {Registers\\[2pt] $128\times64$\\[2pt] \textbf{16\,KB} (bf16)};
-    \draw[-{Latex[length=2.5mm]}, very thick, draw=mmblue] (s3.east) -- (regs.west);
+    \node[font=\scriptsize] at (0.75,1.45) {$128\times256$ tile};
+    % per-strip pipeline
+    \node[b, fill=blue!8, minimum width=1.7cm] (reg) at (4.7,0)
+      {registers\\$128\times64$\\\textbf{16\,KB} bf16};
+    \node[b, fill=orange!12, minimum width=1.2cm] (sm) at (7.6,0) {SMEM\\stage};
+    \node[b, fill=gray!12, minimum width=1.0cm] (hb) at (10.2,0) {HBM};
+    \draw[ar] (s3.east) -- node[above]{\code{tcgen05.ld}} (reg.west);
+    \draw[ar] (reg) -- node[above]{pack} (sm);
+    \draw[ar] (sm) -- node[above]{TMA store} (hb);
+    % register reuse loop
+    \draw[ar, dashed] (reg.south) to[out=-90,in=-90,looseness=0.9] (s2.south);
+    \node[font=\scriptsize, text=mmblue] at (2.85,-1.95) {reuse for next strip};
   \end{tikzpicture}
   \end{center}
 
-  \vspace{0.25cm}
-  Each strip is $128\times64 = 16$\,KB once packed to bf16 --- it fits
-  comfortably. Per strip: \code{tcgen05.ld} $\to$ pack $\to$ stage in SMEM
-  $\to$ TMA store, then reuse the registers for the next.
+  \vspace{0.15cm}
+  Each strip is just \textbf{16\,KB} (bf16) --- it fits comfortably, and the
+  \textbf{same registers are reused} for every strip (8 strips if $BN{=}512$).
 \end{frame}
 
 \begin{frame}{Epilogue Design: Three Phases}
