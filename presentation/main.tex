@@ -46,6 +46,17 @@
 
 \newcommand{\code}[1]{\texttt{#1}}
 
+% Uniform section divider slide. #1 = hyperlink target name, #2 = title text.
+\newcommand{\sectionslide}[2]{%
+  \begin{frame}[plain]
+    \begin{center}
+      \vspace{1.8cm}
+      \hypertarget{#1}{}%
+      {\usebeamercolor[fg]{title}\Large\bfseries #2}
+    \end{center}
+  \end{frame}%
+}
+
 \begin{document}
 
 \begin{frame}
@@ -65,10 +76,10 @@
 
 
 
-\section{Background}
+\section{GEMM and B200 Background}
+\sectionslide{toc:bg}{GEMM and B200 Background}
 
 \begin{frame}{GEMM: the Core Operation}
-  \hypertarget{toc:bg}{}%
   A \textbf{GEMM} (general matrix multiply) computes
   \[
     \underbrace{C}_{M\times N} \;=\; \underbrace{A}_{M\times K}\,\cdot\,
@@ -263,14 +274,8 @@
 \end{frame}
 
 
-\begin{frame}[plain]
-  \begin{center}
-    \vspace{1.8cm}
-    \hypertarget{toc:pipe}{}%
-    {\usebeamercolor[fg]{title}\Large\bfseries A Pipelined Design of GEMM kernel}
-  \end{center}
-\end{frame}
-\section{Orchestration}
+\section{Pipelining: Overlap and Synchronization}
+\sectionslide{toc:pipe}{Pipelining: Overlap and Synchronization}
 
 \begin{frame}{The Core Idea: Orchestration}
   If there is one idea to take away from this talk, it is this:
@@ -761,8 +766,6 @@
   \end{table}
 \end{frame}
 
-\section{From Diagram to Code}
-
 \begin{frame}{From Diagram to Code}
   We now connect the container diagram to the real kernel. Each warp role maps
   to one loop that \emph{waits}, \emph{works}, then \emph{signals}:
@@ -846,9 +849,9 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
 \end{frame}
 
 \section{2-CTA MMA}
+\sectionslide{toc:cta2}{2-CTA MMA}
 
 \begin{frame}{One Key Optimization: 2-CTA MMA}
-  \hypertarget{toc:cta2}{}%
   \begin{columns}[T,onlytextwidth]
     \column{0.43\textwidth}
     \vspace{0.35cm}
@@ -1039,8 +1042,10 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   \small For medium-to-large square GEMMs, higher AI often wins.
 \end{frame}
 
+\section{Epilogue Design}
+\sectionslide{toc:epi}{Pipelining the Epilogue}
+
 \begin{frame}{Epilogue Design: Three Phases}
-  \hypertarget{toc:epi}{}%
   So far we have shown only the first phase of the epilogue. In full it has
   \textbf{three}:
 
@@ -1261,7 +1266,8 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \end{lstlisting}
 \end{frame}
 
-\section{Tile Sizes and Shared Memory}
+\section{Implementation and Performance}
+\sectionslide{toc:impl}{Implementation and Performance}
 
 \begin{frame}{Partitioning Shared Memory}
   \begin{center}
@@ -1385,16 +1391,6 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \end{itemize}
 \end{frame}
 
-\section{Implementation \& Performance}
-
-\begin{frame}[plain]
-  \begin{center}
-    \vspace{1.8cm}
-    \hypertarget{toc:impl}{}%
-    {\usebeamercolor[fg]{title}\Large\bfseries Implementation and Performance Results}
-  \end{center}
-\end{frame}
-
 \begin{frame}{Implementation Details Worth Noting}
   \textbf{Warp layout --- deliberately not a power of two.} Each CTA launches
   \[
@@ -1513,15 +1509,8 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \centering\small The optimum is shape-dependent and empirical --- hence autotune.
 \end{frame}
 
-\section{Adding Epilogue Fusions}
-
-\begin{frame}[plain]
-  \begin{center}
-    \vspace{1.8cm}
-    \hypertarget{toc:fusion}{}%
-    {\usebeamercolor[fg]{title}\Large\bfseries Adding Epilogue Fusions}
-  \end{center}
-\end{frame}
+\section{Adding a Custom Epilogue Fusion}
+\sectionslide{toc:fusion}{Adding a Custom Epilogue Fusion}
 
 \begin{frame}{Adding Epilogue Fusions}
   A custom epilogue fusion is almost entirely an \textbf{epilogue} change --- the
