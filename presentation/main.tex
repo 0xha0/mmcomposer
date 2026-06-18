@@ -1178,8 +1178,10 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 
   \vspace{0.35cm}
   \begin{enumerate}
-    \item \textbf{Drain TMEM into registers} with \code{tcgen05.ld} (already seen).
-    \item \textbf{Write registers into an SMEM staging buffer}.
+    \item \textbf{Drain TMEM into registers} with \code{tcgen05.ld} (already seen)
+      --- the accumulator arrives as \textbf{FP32}.
+    \item \textbf{Downcast FP32\,$\to$\,BF16} and write the registers into an SMEM
+      staging buffer.
     \item \textbf{Issue a TMA store} from SMEM to HBM.
   \end{enumerate}
 
