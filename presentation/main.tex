@@ -1399,9 +1399,12 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
     \item \textbf{2-CTA} --- only \textbf{rank 0} issues, but the tensor cores on
       \textbf{both} ranks compute (the instruction spans $M = 2\times128$ across
       the cluster).
-    \item \textbf{TMEM accumulate, fully async} --- partial sums stay in TMEM
-      (double-buffered) until the epilogue; \code{tcgen05.commit} signals an
-      \code{mbarrier} on completion, so the issuing warp never blocks.
+    \item \textbf{Async completion signal.} Partial sums accumulate in TMEM
+      (double-buffered). The lane issues the MMAs then \code{tcgen05.commit} and
+      \emph{continues without blocking}; when the committed MMA group finishes,
+      the tensor core fires the \code{mbarrier} and the hardware
+      \textbf{auto-flips its phase} --- ``TMEM data ready.'' Here the flip is
+      gated on \emph{compute completion}, not a byte count.
   \end{itemize}
 \end{frame}
 
