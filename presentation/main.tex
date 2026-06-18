@@ -248,13 +248,12 @@
       plain vectorized \code{int4} global store works just as well.
     \item Likewise the input load uses \textbf{TMA}, but \code{cp.async} is also
       async and would work --- TMA load is just more B200-native.
-    \item Buffering depths, warp counts, \ldots\ are points on a design spectrum too.
   \end{itemize}
 
   \vspace{0.2cm}
   \begin{center}
     The whole framework is about \textbf{pipelining}: keep every engine busy by
-    overlapping the four operations.
+    overlapping. Keep results correct by synchronizations.
   \end{center}
 
   \vspace{0.15cm}
@@ -266,7 +265,7 @@
 \begin{frame}[plain]
   \begin{center}
     \vspace{1.8cm}
-    {\usebeamercolor[fg]{title}\Large\bfseries High-Level Design of GEMM kernel}
+    {\usebeamercolor[fg]{title}\Large\bfseries A Pipelined Design of GEMM kernel}
   \end{center}
 \end{frame}
 \section{Orchestration}
@@ -274,14 +273,22 @@
 \begin{frame}{The Core Idea: Orchestration}
   If there is one idea to take away from this talk, it is this:
 
-  \vspace{0.35cm}
+  \vspace{0.3cm}
   \begin{center}
-    \textbf{A high-performance GEMM kernel is an orchestration problem.}
+    \textbf{A high-performance GEMM kernel is a \emph{pipelining} problem.}
   \end{center}
 
-  \vspace{0.35cm}
-  The kernel is a dataflow schedule over hardware units, warp roles, and
-  on-chip containers. 
+  \vspace{0.3cm}
+  \begin{itemize}
+    \item \textbf{Overlap} the engines --- TMA, tensor cores, CUDA cores run
+      \textbf{asynchronously}, so none sits idle.
+    \item \textbf{Synchronize} only when needed, on specific \emph{events} --- a
+      value is ready before it is read, a container is free before it is reused.
+  \end{itemize}
+
+  \vspace{0.2cm}
+  We call this scheduling \textbf{orchestration}: a dataflow over hardware units,
+  warp roles, and on-chip containers.
 \end{frame}
 
 \begin{frame}{Operations and Containers}
