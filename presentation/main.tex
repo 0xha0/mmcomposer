@@ -69,6 +69,7 @@
     \item \hyperlink{toc:pipe}{Pipelining: overlap and synchronization}
     \item \hyperlink{toc:cta2}{2-CTA MMA}
     \item \hyperlink{toc:epi}{Pipelining the epilogue too}
+    \item \hyperlink{toc:tiles}{Shared memory partitioning}
     \item \hyperlink{toc:impl}{Implementation and performance results}
     \item \hyperlink{toc:fusion}{Adding a custom epilogue fusion}
   \end{itemize}
@@ -1235,8 +1236,8 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \end{lstlisting}
 \end{frame}
 
-\section{Implementation and Performance}
-\sectionslide{toc:impl}{Implementation and Performance}
+\section{Shared Memory Partitioning}
+\sectionslide{toc:tiles}{Shared Memory Partitioning}
 
 \begin{frame}{Partitioning Shared Memory}
   \begin{center}
@@ -1360,6 +1361,9 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
       not covered here).
   \end{itemize}
 \end{frame}
+
+\section{Implementation and Performance}
+\sectionslide{toc:impl}{Implementation and Performance}
 
 \begin{frame}{Implementation Details Worth Noting}
   \textbf{Warp layout --- deliberately not a power of two.} Each CTA launches
