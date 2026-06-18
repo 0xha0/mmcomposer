@@ -237,6 +237,31 @@
   \textbf{registers} in the CUDA cores; \textbf{SMEM} is the shared hub.}
 \end{frame}
 
+\begin{frame}{One Framework, Not the Only Way}
+  There are many valid ways to build a GEMM kernel on B200. This talk presents
+  \textbf{one} --- a \textbf{pipelining-first}, warp-specialized design.
+
+  \vspace{0.2cm}
+  \begin{itemize}
+    \item Many choices are illustrative, not mandatory. The epilogue here uses a
+      \textbf{TMA store} --- chosen to show \emph{store pipelining} --- but a
+      plain vectorized \code{int4} global store works just as well.
+    \item Likewise the input load uses \textbf{TMA}, but \code{cp.async} is also
+      async and would work --- TMA load is just more B200-native.
+    \item Buffering depths, warp counts, \ldots\ are points on a design spectrum too.
+  \end{itemize}
+
+  \vspace{0.2cm}
+  \begin{center}
+    The whole framework is about \textbf{pipelining}: keep every engine busy by
+    overlapping the four operations.
+  \end{center}
+
+  \vspace{0.15cm}
+  It is a \textbf{canonical default} that empirically performs well across most
+  shapes --- not the only, nor always the optimal, design.
+\end{frame}
+
 
 \begin{frame}[plain]
   \begin{center}
