@@ -167,6 +167,28 @@
   \end{columns}
 \end{frame}
 
+\begin{frame}{The Tensor Core MMA (\code{tcgen05})}
+  Blackwell's tensor cores are driven by a single \textbf{asynchronous}
+  instruction, \code{tcgen05.mma}: one issue computes a whole tile MMA (not
+  per-thread FMAs). It reads A and B from SMEM and \textbf{accumulates into TMEM}.
+
+  \vspace{0.25cm}
+  Its tile shape is \textbf{fixed by the hardware} (bf16 inputs):
+  \begin{itemize}
+    \item \textbf{M-atom $= 128$} --- one instruction processes exactly 128 rows
+      of A.
+    \item $N$ up to $256$; $K = 16$ (chained to cover $BK$).
+    \item the accumulator lives in \textbf{TMEM --- a $128\times512$ array}, so
+      only \textbf{128 rows} are available.
+  \end{itemize}
+
+  \vspace{0.25cm}
+  \textbf{This is why $BM = 128$}: smaller wastes the MMA (and reads past the A
+  tile), larger won't fit --- TMEM has only 128 rows. Need more rows?
+  \textbf{2-CTA MMA} has two CTAs jointly cover $M = 256$ --- each still
+  holding 128.
+\end{frame}
+
 \begin{frame}{The Big Picture: GEMM Dataflow on the SM}
   Where data lives as it flows through one SM:
   \textbf{HBM\,$\to$\,SMEM\,$\to$\,TMEM\,$\to$\,registers\,$\to$\,SMEM\,$\to$\,HBM}.
@@ -1420,14 +1442,14 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
       \item TMA\,$\to$\,SMEM: \code{mbarrier\_arrive\_expect\_tx(.., SLOT\_BYTES)}
         --- flips once the bytes land.
       \item MMA\,$\to$\,TMEM: \code{tcgen05\_commit\_mcast\_g2(tmem\_full)} ---
-        flips once the MMAs finish.
+        flips once prior MMAs finish.
     \end{itemize}
 
     \column{0.5\textwidth}
     \textbf{Resource-free}
     \begin{itemize}
       \item MMA\,$\to$\,SMEM slot: \code{tcgen05\_commit\_mcast\_g2(free\_mbar)}
-        --- flips after the MMA's SMEM reads.
+        --- flips after prior MMAs finish.
       \item Epilogue\,$\to$\,TMEM: \code{EPI\_TMEM\_FREE\_ARRIVE} --- flips once
         the epilogue has drained TMEM.
     \end{itemize}
