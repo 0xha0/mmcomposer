@@ -54,12 +54,12 @@
 
 \begin{frame}{Talk Outline}
   \begin{itemize}
-    \item GEMM and B200 background
-    \item Pipelining: overlap and synchronization
-    \item 2-CTA MMA
-    \item Epilogue design
-    \item Implementation and performance results
-    \item Adding a custom epilogue fusion
+    \item \hyperlink{toc:bg}{GEMM and B200 background}
+    \item \hyperlink{toc:pipe}{Pipelining: overlap and synchronization}
+    \item \hyperlink{toc:cta2}{2-CTA MMA}
+    \item \hyperlink{toc:epi}{Pipelining the epilogue too}
+    \item \hyperlink{toc:impl}{Implementation and performance results}
+    \item \hyperlink{toc:fusion}{Adding a custom epilogue fusion}
   \end{itemize}
 \end{frame}
 
@@ -68,6 +68,7 @@
 \section{Background}
 
 \begin{frame}{GEMM: the Core Operation}
+  \hypertarget{toc:bg}{}%
   A \textbf{GEMM} (general matrix multiply) computes
   \[
     \underbrace{C}_{M\times N} \;=\; \underbrace{A}_{M\times K}\,\cdot\,
@@ -265,6 +266,7 @@
 \begin{frame}[plain]
   \begin{center}
     \vspace{1.8cm}
+    \hypertarget{toc:pipe}{}%
     {\usebeamercolor[fg]{title}\Large\bfseries A Pipelined Design of GEMM kernel}
   \end{center}
 \end{frame}
@@ -316,12 +318,12 @@
   \end{itemize}
 \end{frame}
 
-\begin{frame}{The Four Operations}
-  The whole kernel has \textbf{four} major operations:
+\begin{frame}{The Four Phases}
+  The whole kernel has \textbf{four} major phases:
 
-  \vspace{0.15cm}
+  \vspace{0.1cm}
   \begin{center}
-    \begin{tikzpicture}[scale=0.9, transform shape,
+    \begin{tikzpicture}[scale=0.78, transform shape,
         mem/.style={draw, thick, rounded corners=2pt, minimum width=1.8cm, minimum height=0.72cm, align=center, font=\small, fill=blue!8},
         omem/.style={draw, thick, rounded corners=2pt, minimum width=1.8cm, minimum height=0.72cm, align=center, font=\small, fill=orange!12},
         op/.style={draw, thick, rounded corners=2pt, minimum width=2.3cm, minimum height=0.72cm, align=center, font=\small, fill=green!10},
@@ -354,13 +356,18 @@
     \end{tikzpicture}
   \end{center}
 
-  \vspace{0.15cm}
+  \vspace{0.1cm}
   \begin{itemize}
     \item \textbf{Input tile load} --- drain HBM, fill the SMEM compute buffer.
     \item \textbf{MMA} --- drain SMEM, accumulate into TMEM.
     \item \textbf{Epilogue} --- drain TMEM, stage the result into SMEM.
     \item \textbf{Output tile store} --- drain the SMEM store buffer, write to HBM.
   \end{itemize}
+
+  \vspace{0.05cm}
+  \footnotesize This is the \emph{top-level} pipeline. Each phase can also be
+  pipelined internally --- e.g.\ the epilogue splits into micro-stages
+  (TMEM\,$\to$\,reg, SMEM write, TMA store) that overlap across tiles.
 \end{frame}
 
 \begin{frame}{When Can an Operation Start?}
@@ -846,6 +853,7 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
 \section{2-CTA MMA}
 
 \begin{frame}{One Key Optimization: 2-CTA MMA}
+  \hypertarget{toc:cta2}{}%
   \begin{columns}[T,onlytextwidth]
     \column{0.43\textwidth}
     \vspace{0.35cm}
@@ -1037,6 +1045,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 \end{frame}
 
 \begin{frame}{Epilogue Design: Three Phases}
+  \hypertarget{toc:epi}{}%
   So far we have shown only the first phase of the epilogue. In full it has
   \textbf{three}:
 
@@ -1386,6 +1395,7 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
 \begin{frame}[plain]
   \begin{center}
     \vspace{1.8cm}
+    \hypertarget{toc:impl}{}%
     {\usebeamercolor[fg]{title}\Large\bfseries Implementation and Performance Results}
   \end{center}
 \end{frame}
@@ -1513,6 +1523,7 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
 \begin{frame}[plain]
   \begin{center}
     \vspace{1.8cm}
+    \hypertarget{toc:fusion}{}%
     {\usebeamercolor[fg]{title}\Large\bfseries Adding Epilogue Fusions}
   \end{center}
 \end{frame}
