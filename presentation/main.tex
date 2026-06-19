@@ -1184,31 +1184,108 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   neighboring threads' outputs.
 \end{frame}
 
-\begin{frame}{Epilogue Concern 1: Coalesced Global Write}
-  Each thread owns a \emph{row}, so a single column written straight to HBM lands
-  threads $N$ apart --- \textbf{uncoalesced}. Instead, slice the tile into
-  \textbf{$128\times64$ chunks}; fill one in SMEM, then let \textbf{TMA} write the
-  whole chunk out --- \textbf{coalesced}.
+\begin{frame}{Epilogue: A Direct Column Write is Uncoalesced}
+  Thread $t$ holds \emph{row $t$}. Storing that column straight to HBM puts thread
+  $t$ at byte $\approx t\cdot N$ --- each lane lands in a \textbf{different
+  128-byte sector}, so the warp's store is \textbf{uncoalesced}.
 
-  \vspace{0.35cm}
+  \vspace{0.15cm}
   \begin{center}
-  \begin{tikzpicture}[font=\scriptsize, scale=0.95, transform shape,
-      ar/.style={-{Latex[length=2mm]}, very thick, draw=mmblue}]
-    % LEFT: uncoalesced --- one column written direct
-    \node[font=\scriptsize\bfseries, text=red!70!black] at (0.07,1.5) {Direct};
-    \node[draw=red!60, fill=red!20, minimum width=0.14cm, minimum height=2.0cm] (sc) at (0.07,0) {};
-    \node[text=red!70!black, align=center] at (0.07,-1.6) {1 column\\$\Rightarrow$ \textbf{strided}};
-    % RIGHT: coalesced --- tile sliced into 4 chunks -> SMEM buffer (chunk-sized)
+    \begin{tikzpicture}[scale=0.82, transform shape,
+        cell/.style={draw=black!45, minimum width=0.44cm, minimum height=0.38cm},
+        tlabel/.style={font=\scriptsize\ttfamily, anchor=east},
+        reg/.style={draw, thick, rounded corners=1pt, fill=orange!22, minimum width=0.95cm, minimum height=0.38cm, font=\scriptsize},
+        sect/.style={draw=black!35, fill=gray!8, minimum width=1.5cm, minimum height=0.38cm},
+        hit/.style={draw=red!55, fill=red!30, minimum width=0.2cm, minimum height=0.28cm},
+        arrow/.style={-{Latex[length=1.4mm]}, draw=mmsignal}]
+      \foreach \r in {0,...,7} {
+        \node[tlabel] at (-5.15,1.45 - 0.42*\r) {T\r};
+        \foreach \c in {0,...,7} {
+          \ifnum\c=5
+            \node[cell, fill=orange!38] at (-4.7 + 0.44*\c, 1.45 - 0.42*\r) {};
+          \else
+            \node[cell, fill=teal!12] at (-4.7 + 0.44*\c, 1.45 - 0.42*\r) {};
+          \fi
+        }
+      }
+      \node[font=\scriptsize\bfseries, text=mmsignal, anchor=south] at (-4.7+0.44*5,1.95) {one \code{tcgen05.ld}};
+      % registers
+      \node[font=\scriptsize, text=mmgray] at (0.1,1.95) {registers};
+      \foreach \r in {0,...,7} {
+        \node[reg] (rg\r) at (0.1,1.45 - 0.42*\r) {row \r};
+        \draw[arrow] (-4.7+0.44*5+0.22,1.45 - 0.42*\r) -- (rg\r.west);
+      }
+      % HBM sectors: each row's element lands in its own sector
+      \node[font=\scriptsize, text=mmgray] at (3.7,1.95) {HBM (128-B sectors)};
+      \foreach \r in {0,...,7} {
+        \node[sect] (h\r) at (3.7,1.45 - 0.42*\r) {};
+        \node[hit] at (3.05,1.45 - 0.42*\r) {};
+        \draw[arrow, draw=red!60] (rg\r.east) -- (h\r.west);
+      }
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{-0.05cm}
+  \small Each of the warp's lanes touches a separate sector, filling just
+  16 of 128 bytes --- \textbf{$\sim$8$\times$ wasted bandwidth}.
+\end{frame}
+
+\begin{frame}{Epilogue: Load the Whole 64-Column Chunk}
+  The fix starts here: drain not one column but a whole \textbf{$128\times64$
+  chunk} into registers ($8\times$ \code{tcgen05.ld}). Thread $t$ now holds all
+  64 of row $t$'s outputs.
+
+  \vspace{0.2cm}
+  \begin{center}
+    \begin{tikzpicture}[scale=0.82, transform shape,
+        cell/.style={draw=black!45, minimum width=0.44cm, minimum height=0.38cm},
+        tlabel/.style={font=\scriptsize\ttfamily, anchor=east},
+        arrow/.style={-{Latex[length=2.4mm]}, very thick, draw=mmsignal}]
+      % TMEM: whole 64-col chunk highlighted
+      \foreach \r in {0,...,7} {
+        \node[tlabel] at (-5.05,1.45 - 0.42*\r) {T\r};
+        \foreach \c in {0,...,7} {
+          \node[cell, fill=orange!38] at (-4.6 + 0.44*\c, 1.45 - 0.42*\r) {};
+        }
+      }
+      \node[font=\scriptsize\bfseries, text=mmsignal] at (-3.06,2.05) {64 columns (one chunk)};
+      % registers: wide matrix holding the whole chunk
+      \foreach \r in {0,...,7} {
+        \foreach \c in {0,...,7} {
+          \node[cell, draw=black!30, fill=orange!22] at (1.7 + 0.44*\c, 1.45 - 0.42*\r) {};
+        }
+      }
+      \node[font=\scriptsize, text=mmgray] at (3.24,2.05) {registers: $128\times64$};
+      \draw[arrow] (-1.2,0) -- node[above, font=\scriptsize\bfseries]{load all 64 cols} (1.2,0);
+    \end{tikzpicture}
+  \end{center}
+
+  \vspace{-0.05cm}
+  \small The register footprint is $128\times64$ fp32 $=32$\,KB --- comfortably
+  within the register file, and reused for the next chunk.
+\end{frame}
+
+\begin{frame}{Epilogue Concern 1: Coalesced Global Write}
+  So we route the chunk through SMEM: downcast the registers to bf16 into a
+  \textbf{$128\times64$ SMEM buffer}, then let \textbf{TMA} store it. Now each
+  128-byte sector is written \emph{whole} --- the store is \textbf{coalesced}.
+
+  \vspace{0.4cm}
+  \begin{center}
+  \begin{tikzpicture}[font=\scriptsize, scale=0.92, transform shape,
+      blk/.style={draw, thick, rounded corners=1pt, align=center, minimum height=1.5cm, minimum width=1.8cm, font=\scriptsize},
+      sect/.style={draw=black!35, fill=green!35, minimum width=1.5cm, minimum height=0.34cm},
+      ar/.style={-{Latex[length=2.2mm]}, very thick, draw=mmblue}]
+    \node[blk, fill=orange!22] (reg) at (0,0) {registers\\$128\times64$\\fp32};
+    \node[blk, fill=orange!12] (sm) at (3.4,0) {SMEM buffer\\$128\times64$\\bf16};
+    \draw[ar] (reg) -- node[above]{downcast} (sm);
+    % HBM: contiguous, full 128-B sectors
+    \node[font=\scriptsize, text=mmgray] at (7.1,1.2) {HBM (128-B sectors)};
     \foreach \i in {0,1,2,3} {
-      \node[draw=black!40, fill=teal!12, minimum width=0.85cm, minimum height=2.0cm]
-        (c\i) at (2.3 + \i*0.87,0) {64};
+      \node[sect] at (7.1, 0.55 - 0.4*\i) {};
     }
-    \node[draw=mmblue, very thick, minimum width=0.85cm, minimum height=2.0cm] at (2.3+3*0.87,0) {};
-    \node[font=\scriptsize] at (3.6,1.5) {$128\times256$ tile, 4 chunks};
-    \node[draw, thick, fill=green!20, minimum width=0.85cm, minimum height=2.0cm] (sm) at (7.5,0) {};
-    \node[align=center, font=\scriptsize] at (7.5,1.55) {SMEM buf\\$128\times64$};
-    \draw[ar] (c3.east) -- node[above]{one chunk} (sm.west);
-    \node[text=green!45!black, align=center] at (7.5,-1.6) {contiguous\\$\Rightarrow$ \textbf{coalesced}};
+    \draw[ar] (sm.east) -- node[above]{TMA store} (6.35,0);
+    \node[text=green!45!black, align=center] at (7.1,-1.35) {full sectors\\$\Rightarrow$ \textbf{coalesced}};
   \end{tikzpicture}
   \end{center}
 \end{frame}
