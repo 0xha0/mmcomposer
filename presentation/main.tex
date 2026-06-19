@@ -1187,7 +1187,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 \begin{frame}{Epilogue: A Direct Column Write is Uncoalesced}
   Thread $t$ holds \emph{row $t$}. Storing that column straight to HBM puts thread
   $t$ at byte $\approx t\cdot N$ --- each lane lands in a \textbf{different
-  128-byte sector}, so the warp's store is \textbf{uncoalesced}.
+  128-byte transaction}, so the warp's store is \textbf{uncoalesced}.
 
   \vspace{0.15cm}
   \begin{center}
@@ -1216,7 +1216,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
         \draw[arrow] (-4.7+0.44*5+0.22,1.45 - 0.42*\r) -- (rg\r.west);
       }
       % HBM sectors: each row's element lands in its own sector
-      \node[font=\scriptsize, text=mmgray] at (3.7,1.95) {HBM (128-B sectors)};
+      \node[font=\scriptsize, text=mmgray] at (3.7,1.95) {HBM (128-B transactions)};
       \foreach \r in {0,...,7} {
         \node[sect] (h\r) at (3.7,1.45 - 0.42*\r) {};
         \node[hit] at (3.05,1.45 - 0.42*\r) {};
@@ -1226,7 +1226,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   \end{center}
 
   \vspace{-0.05cm}
-  \small Each of the warp's lanes touches a separate sector, filling just
+  \small Each of the warp's lanes touches a separate transaction, filling just
   16 of 128 bytes --- \textbf{$\sim$8$\times$ wasted bandwidth}.
 \end{frame}
 
@@ -1268,7 +1268,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 \begin{frame}{Epilogue Concern 1: Coalesced Global Write}
   So we route the chunk through SMEM: downcast the registers to bf16 into a
   \textbf{$128\times64$ SMEM buffer}, then let \textbf{TMA} store it. Now each
-  128-byte sector is written \emph{whole} --- the store is \textbf{coalesced}.
+  128-byte transaction is written \emph{whole} --- the store is \textbf{coalesced}.
 
   \vspace{0.4cm}
   \begin{center}
@@ -1280,12 +1280,12 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
     \node[blk, fill=orange!12] (sm) at (3.4,0) {SMEM buffer\\$128\times64$\\bf16};
     \draw[ar] (reg) -- node[above]{downcast} (sm);
     % HBM: contiguous, full 128-B sectors
-    \node[font=\scriptsize, text=mmgray] at (7.1,1.2) {HBM (128-B sectors)};
+    \node[font=\scriptsize, text=mmgray] at (7.1,1.2) {HBM (128-B transactions)};
     \foreach \i in {0,1,2,3} {
       \node[sect] at (7.1, 0.55 - 0.4*\i) {};
     }
     \draw[ar] (sm.east) -- node[above]{TMA store} (6.35,0);
-    \node[text=green!45!black, align=center] at (7.1,-1.35) {full sectors\\$\Rightarrow$ \textbf{coalesced}};
+    \node[text=green!45!black, align=center] at (7.1,-1.35) {full transactions\\$\Rightarrow$ \textbf{coalesced}};
   \end{tikzpicture}
   \end{center}
 \end{frame}
