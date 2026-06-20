@@ -1141,7 +1141,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 \begin{frame}{Epilogue Design: TMEM Layout}
   TMEM is laid out for MMA accumulation: \code{tcgen05.ld} reads it
   \textbf{one column at a time}, with each \textbf{thread mapped to a row}. It has
-  \textbf{128 rows} (the $BM{=}128$ lanes); we draw only 8.
+  \textbf{128 rows}; we draw only 8.
 
   \vspace{0.2cm}
   \begin{center}
