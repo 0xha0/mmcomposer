@@ -205,8 +205,8 @@
     \node[font=\tiny, text=mmblue, anchor=south east] at (1.18,2.22) {$(x,y)$};
     \draw[{Latex[length=1.4mm]}-{Latex[length=1.4mm]}] (1.2,2.35) -- (2.4,2.35);
     \node[above, font=\tiny] at (1.8,2.32) {$BK$};
-    \draw[{Latex[length=1.4mm]}-{Latex[length=1.4mm]}] (2.55,1.1) -- (2.55,2.2);
-    \node[right, font=\tiny] at (2.55,1.65) {$BM$};
+    \draw[{Latex[length=1.4mm]}-{Latex[length=1.4mm]}] (1.05,1.1) -- (1.05,2.2);
+    \node[left, font=\tiny] at (1.05,1.65) {$BM$};
     % SMEM destination
     \draw[thick, fill=orange!14] (6.2,1.1) rectangle (7.6,2.2);
     \node[font=\tiny, align=center] at (6.9,1.65) {tile\\$BM\times BK$};
@@ -275,35 +275,26 @@
   $BM{=}128$ lanes --- the same constraint that fixes the MMA's M-atom.
 \end{frame}
 
-\begin{frame}{mbarrier and Async Pipelining}
-  The async units run on their own; warps coordinate through \textbf{mbarriers}
-  --- lightweight shared-memory signals --- instead of blocking:
+\begin{frame}{mbarrier: a Shared-Memory Barrier}
+  An \textbf{mbarrier} is a single \textbf{64-bit (8-byte)} word in shared memory.
+  The hardware packs all of its synchronization state into that one word:
 
-  \vspace{0.15cm}
+  \vspace{0.35cm}
   \begin{center}
-  \begin{tikzpicture}[font=\scriptsize, scale=0.92, transform shape,
-      b/.style={draw, thick, rounded corners=2pt, align=center, minimum height=1.1cm, minimum width=2.0cm},
-      slot/.style={draw, thick, fill=orange!15, minimum width=0.55cm, minimum height=0.8cm},
-      fl/.style={-{Latex[length=2mm]}, very thick, draw=mmblue},
-      sig/.style={-{Latex[length=1.8mm]}, thick, dashed}]
-    \node[b, fill=blue!8] (p) at (0,0) {Producer\\{\scriptsize fills a slot}};
-    \node[slot] (s0) at (3.0,0) {};
-    \node[slot] (s1) at (3.65,0) {};
-    \node[slot] (s2) at (4.3,0) {};
-    \node[font=\scriptsize, text=mmgray] at (3.65,0.8) {buffers (slots)};
-    \node[b, fill=orange!12] (c) at (7.3,0) {Consumer\\{\scriptsize drains a slot}};
-    \draw[fl] (p.east) -- node[above]{fill} (s0.west);
-    \draw[fl] (s2.east) -- node[above]{drain} (c.west);
-    \draw[sig, draw=mmsignal] (p.north) to[out=38,in=142] node[above]{\textbf{data-ready}} (c.north);
-    \draw[sig, draw=red!65] (c.south) to[out=-142,in=-38] node[below]{\textbf{buffer-free}} (p.south);
+  \begin{tikzpicture}[font=\scriptsize, scale=0.95, transform shape,
+      f/.style={draw, thick, minimum height=1.0cm, align=center}]
+    \node[f, fill=blue!12, minimum width=1.1cm] (ph) at (0,0) {phase\\(parity)};
+    \node[f, fill=orange!16, minimum width=2.6cm, anchor=west] (ar) at (ph.east) {pending\\arrival count};
+    \node[f, fill=green!16, minimum width=2.8cm, anchor=west] (tx) at (ar.east) {pending tx-count\\(bytes)};
+    \node[font=\scriptsize, text=mmgray] at (3.25,0.85) {one 64-bit word in shared memory};
   \end{tikzpicture}
   \end{center}
 
-  \vspace{0.15cm}
-  \small The producer signals \textbf{data-ready}; the consumer waits, drains,
-  then signals \textbf{buffer-free}. With several slots the producer fills the
-  next while the consumer drains the current --- the stages \textbf{overlap} into
-  a pipeline.
+  \vspace{0.5cm}
+  \small \textbf{Common operations:} \code{init(N)} sets the arrival count;
+  \code{arrive} (optionally \code{.expect\_tx(bytes)}) checks in; and
+  \code{try\_wait.parity} blocks until the \textbf{phase flips} --- which the
+  hardware does once both counts reach zero.
 \end{frame}
 
 \begin{frame}{The Big Picture: GEMM Dataflow on the SM}
