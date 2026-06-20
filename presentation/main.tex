@@ -1231,9 +1231,9 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 \end{frame}
 
 \begin{frame}{Epilogue: Load the Whole 64-Column Chunk}
-  The fix starts here: drain not one column but a whole \textbf{$128\times64$
-  chunk} into registers ($8\times$ \code{tcgen05.ld}). Thread $t$ now holds all
-  64 of row $t$'s outputs.
+  The fix starts here: drain not one column but a whole \textbf{64-column chunk}
+  --- one slice of TMEM --- into registers ($8\times$ \code{tcgen05.ld}). Thread
+  $t$ now holds all 64 of its row's outputs.
 
   \vspace{0.2cm}
   \begin{center}
@@ -1241,28 +1241,37 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
         cell/.style={draw=black!45, minimum width=0.44cm, minimum height=0.38cm},
         tlabel/.style={font=\scriptsize\ttfamily, anchor=east},
         arrow/.style={-{Latex[length=2.4mm]}, very thick, draw=mmsignal}]
-      % TMEM: whole 64-col chunk highlighted
+      % TMEM: full tile, one 64-col chunk highlighted (a slice)
       \foreach \r in {0,...,7} {
         \node[tlabel] at (-5.05,1.45 - 0.42*\r) {T\r};
         \foreach \c in {0,...,7} {
-          \node[cell, fill=orange!38] at (-4.6 + 0.44*\c, 1.45 - 0.42*\r) {};
+          \ifnum\c>5
+            \node[cell, fill=orange!38] at (-4.6 + 0.44*\c, 1.45 - 0.42*\r) {};
+          \else
+            \node[cell, fill=teal!12] at (-4.6 + 0.44*\c, 1.45 - 0.42*\r) {};
+          \fi
         }
       }
-      \node[font=\scriptsize\bfseries, text=mmsignal] at (-3.06,2.05) {64 columns (one chunk)};
-      % registers: wide matrix holding the whole chunk
+      \foreach \d in {1,3,5} {
+        \draw[black!45] (-4.6 + 0.44*\d + 0.22, 1.66) -- (-4.6 + 0.44*\d + 0.22, -1.68);
+      }
+      \node[font=\scriptsize, text=mmgray] at (-3.5,2.05) {TMEM: 256 cols, 4 chunks};
+      \node[font=\scriptsize\bfseries, text=mmsignal] at (-1.84,-2.0) {one 64-col chunk};
+      % registers: the loaded chunk (one slice)
       \foreach \r in {0,...,7} {
-        \foreach \c in {0,...,7} {
-          \node[cell, draw=black!30, fill=orange!22] at (1.7 + 0.44*\c, 1.45 - 0.42*\r) {};
+        \foreach \c in {0,1} {
+          \node[cell, draw=black!30, fill=orange!22] at (2.6 + 0.44*\c, 1.45 - 0.42*\r) {};
         }
       }
-      \node[font=\scriptsize, text=mmgray] at (3.24,2.05) {registers: $128\times64$};
-      \draw[arrow] (-1.2,0) -- node[above, font=\scriptsize\bfseries]{load all 64 cols} (1.2,0);
+      \node[font=\scriptsize, text=mmgray] at (2.82,2.05) {registers};
+      \node[font=\scriptsize, text=mmgray] at (2.82,-2.0) {one chunk};
+      \draw[arrow] (-1.1,0) -- node[above, font=\scriptsize\bfseries]{load chunk} (2.0,0);
     \end{tikzpicture}
   \end{center}
 
   \vspace{-0.05cm}
-  \small The register footprint is $128\times64$ fp32 $=32$\,KB --- comfortably
-  within the register file, and reused for the next chunk.
+  \small One chunk is $\sim$32\,KB in fp32 --- comfortably within the register
+  file, and reused for the next chunk.
 \end{frame}
 
 \begin{frame}{Epilogue Concern 1: Coalesced Global Write}
@@ -1291,10 +1300,9 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 \end{frame}
 
 \begin{frame}{Epilogue Concern 2: Filling the $128\times64$ SMEM Buffer}
-  We fill it \code{tcgen05.ld.x8} chunk by chunk. One warp store writes
-  \textbf{one 16-byte column} (one cell per lane --- the highlighted column, not the
-  whole row); naively those cells share \textbf{one bank}, so the swizzle
-  $n \oplus \text{(row \& 7)}$ spreads them.
+  One warp store writes \textbf{one 16-byte column} (one cell per lane --- the
+  highlighted column, not the whole row); naively those cells share \textbf{one
+  bank}, so the swizzle $n \oplus \text{(row \& 7)}$ spreads them.
 
   \vspace{0.05cm}
   \begin{columns}[T,onlytextwidth]
@@ -1336,9 +1344,8 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   \end{columns}
 
   \vspace{0.05cm}
-  {\footnotesize Cell $= c \oplus r =$ bank group; each is one 16-byte store $=$
-  \textbf{4 banks} (8 cells $=$ 32 banks) $=$ the \code{SWIZZLE\_128B} atom.
-  Shown is one phase (lanes 0--7); A warp writes 32 rows and a 128-bit store issues as 4 identical phases.}
+  {\footnotesize Shown is one phase (lanes 0--7); a warp writes 32 rows, and a
+  128-bit store issues as 4 identical phases.}
 \end{frame}
 
 
