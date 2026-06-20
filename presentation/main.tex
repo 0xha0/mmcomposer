@@ -68,7 +68,7 @@
     \item \hyperlink{toc:bg}{GEMM and B200 background}
     \item \hyperlink{toc:pipe}{Pipelining: overlap and synchronization}
     \item \hyperlink{toc:cta2}{2-CTA MMA}
-    \item \hyperlink{toc:epi}{Pipelining the epilogue too}
+    \item \hyperlink{toc:epi}{Designing the epilogue}
     \item \hyperlink{toc:tiles}{Shared memory partitioning}
     \item \hyperlink{toc:impl}{Implementation and performance results}
     \item \hyperlink{toc:fusion}{Adding a custom epilogue fusion}
@@ -1103,7 +1103,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 \end{frame}
 
 \section{Epilogue Design}
-\sectionslide{toc:epi}{Pipelining the Epilogue}
+\sectionslide{toc:epi}{Designing the Epilogue}
 
 \begin{frame}{Epilogue Design: Three Phases}
   So far we have shown only the first phase of the epilogue. In full it has
