@@ -1119,9 +1119,9 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
       \node[box, fill=blue!8, right=1.7cm of tmem] (regs) {registers};
       \node[box, fill=orange!12, right=1.7cm of regs] (smem) {SMEM\\staging};
       \node[box, fill=gray!10, right=1.7cm of smem] (hbm) {HBM};
-      \draw[arrow] (tmem) -- node[above, font=\scriptsize]{\textbf{1} \code{tcgen05.ld}} (regs);
-      \draw[arrow] (regs) -- node[above, font=\scriptsize]{\textbf{2} store} (smem);
-      \draw[arrow] (smem) -- node[above, font=\scriptsize]{\textbf{3} TMA store} (hbm);
+      \draw[arrow] (tmem) -- node[above, font=\scriptsize]{\code{tcgen05.ld}} (regs);
+      \draw[arrow] (regs) -- node[above, font=\scriptsize]{store} (smem);
+      \draw[arrow] (smem) -- node[above, font=\scriptsize]{TMA store} (hbm);
     \end{tikzpicture}
   \end{center}
 
