@@ -295,6 +295,10 @@
   \code{arrive} checks a thread in (count\,$-1$); \code{arrive.expect\_tx(bytes)}
   checks in \emph{and} arms the byte count; \code{try\_wait.parity} blocks until
   the \textbf{phase flips} --- which the hardware does once both counts reach zero.
+
+  \vspace{0.15cm}
+  \small \textbf{Typical use:} signal that data is \emph{ready to consume}, or
+  that a buffer is \emph{free to reuse}.
 \end{frame}
 
 \begin{frame}{The Big Picture: GEMM Dataflow on the SM}
