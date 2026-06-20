@@ -481,43 +481,56 @@
       buf/.style={draw, thick, rounded corners=1pt, minimum width=0.82cm, minimum height=0.6cm, align=center},
       off/.style={fill=black!4, draw=black!30, text=black!45},
       fl/.style={-{Latex[length=2mm]}, very thick, draw=mmblue},
-      floff/.style={-{Latex[length=2mm]}, very thick, draw=black!22}]
+      flab/.style={font=\tiny\bfseries, text=mmblue, fill=white, inner sep=0.7pt},
+      dlab/.style={font=\tiny\bfseries, text=red!62!black, fill=white, inner sep=0.7pt}]
     \draw[draw=mmgray, thick, dashed, rounded corners=5pt] (-6.5,-2.75) rectangle (6.4,2.75);
     \node[font=\scriptsize\bfseries, text=mmgray, anchor=north west] at (-6.45,2.7) {one SM};
     \node[buf, fill=gray!12, minimum width=1.0cm, minimum height=0.95cm] (hbm) at (-7.5,0) {HBM};
     \node[eng, fill=teal!14] (tma) at (-5.1,0) {TMA};
-    % compute buffers (top)
-    \node[font=\scriptsize, text=mmgray] at (-2.2,2.2) {compute (SMEM)};
-    \node[buf, alt=<1->{fill=teal!20}{off}] (c0) at (-2.75,1.5) {c0};
-    \node[buf, alt=<1->{fill=teal!9}{off}]  (c1) at (-1.65,1.5) {c1};
-    % store buffers (bottom)
-    \node[font=\scriptsize, text=mmgray] at (-2.2,-2.2) {store (SMEM)};
-    \node[buf, alt=<3->{fill=orange!22}{off}] (e0) at (-2.75,-1.5) {e0};
-    \node[buf, alt=<3->{fill=orange!10}{off}] (e1) at (-1.65,-1.5) {e1};
-    % tensor core (MMA) top-right
-    \node[eng, minimum width=2.3cm, alt=<2->{fill=green!14}{off}] (tc) at (3.8,1.7) {Tensor Core\\{\scriptsize (MMA)}};
-    % TMEM buffers (mid-right)
-    \node[buf, alt=<2->{fill=green!20}{off}] (t0) at (3.25,0.2) {t0};
-    \node[buf, alt=<2->{fill=green!9}{off}]  (t1) at (4.35,0.2) {t1};
-    \node[font=\scriptsize, text=mmgray] at (5.55,0.2) {TMEM};
-    % CUDA cores (epilogue) bottom-right
-    \node[eng, minimum width=2.3cm, alt=<3->{fill=orange!14}{off}] (cuda) at (3.8,-1.7) {CUDA cores\\{\scriptsize (epilogue)}};
-    % flows
-    \draw[fl] (hbm) -- node[above,font=\tiny]{load} (tma);
-    \draw[fl] (tma.north) to[out=90,in=180] (c0.west);
-    \draw[alt=<2->{fl}{floff}] (c1.east) to[out=0,in=168] node[above,font=\tiny,pos=0.65]{MMA} (tc.west);
-    \draw[alt=<2->{fl}{floff}] (tc.south) -- (t0.north);
-    \draw[alt=<3->{fl}{floff}] (t0.south) to[out=-90,in=90] (cuda.north);
-    \draw[alt=<3->{fl}{floff}] (cuda.west) to[out=180,in=0] node[below,font=\tiny,pos=0.5]{stage} (e1.east);
-    \draw[alt=<4->{fl}{floff}] (e0.west) to[out=180,in=-90] node[below,font=\tiny,pos=0.4]{store} (tma.south);
+    \node[font=\scriptsize, text=mmgray] at (-2.2,2.25) {compute (SMEM)};
+    \node[buf, alt=<1->{fill=teal!16}{off}] (c0) at (-2.85,1.5) {c0};
+    \node[buf, alt=<2->{fill=teal!16}{off}] (c1) at (-1.55,1.5) {c1};
+    \node[font=\scriptsize, text=mmgray] at (-2.2,-2.25) {store (SMEM)};
+    \node[buf, alt=<3->{fill=orange!16}{off}] (e0) at (-2.85,-1.5) {e0};
+    \node[buf, alt=<4->{fill=orange!16}{off}] (e1) at (-1.55,-1.5) {e1};
+    \node[eng, minimum width=2.3cm, alt=<2->{fill=green!14}{off}] (tc) at (3.9,1.7) {Tensor Core\\{\scriptsize (MMA)}};
+    \node[buf, alt=<2->{fill=green!16}{off}] (t0) at (3.35,0.2) {t0};
+    \node[buf, alt=<3->{fill=green!16}{off}] (t1) at (4.45,0.2) {t1};
+    \node[font=\scriptsize, text=mmgray] at (5.6,0.2) {TMEM};
+    \node[eng, minimum width=2.3cm, alt=<3->{fill=orange!14}{off}] (cuda) at (3.9,-1.7) {CUDA cores\\{\scriptsize (epilogue)}};
+    \draw[fl] ([yshift=4pt]hbm.east) -- node[above,font=\tiny]{load} ([yshift=4pt]tma.west);
+    \only<1>{
+      \draw[fl] (tma.north) to[out=90,in=190] node[flab,pos=0.8]{fill} (c0.west);
+    }
+    \only<2>{
+      \draw[fl] (tma.north) to[out=88,in=205] node[flab,pos=0.85]{fill} (c1.south west);
+      \draw[fl] (c0.north) to[out=70,in=170] node[dlab,pos=0.55]{drain} (tc.west);
+      \draw[fl] (tc.south) -- node[flab,pos=0.5]{fill} (t0.north);
+    }
+    \only<3>{
+      \draw[fl] (tma.north) to[out=90,in=190] node[flab,pos=0.8]{fill} (c0.west);
+      \draw[fl] (c1.north) to[out=70,in=172] node[dlab,pos=0.55]{drain} (tc.west);
+      \draw[fl] (tc.south) -- node[flab,pos=0.5]{fill} (t1.north);
+      \draw[fl] (t0.south) to[out=-90,in=130] node[dlab,pos=0.55]{drain} (cuda.north);
+      \draw[fl] (cuda.west) to[out=180,in=-5] node[flab,pos=0.5]{fill} (e0.east);
+    }
+    \only<4>{
+      \draw[fl] (tma.north) to[out=88,in=205] node[flab,pos=0.85]{fill} (c1.south west);
+      \draw[fl] (c0.north) to[out=70,in=170] node[dlab,pos=0.55]{drain} (tc.west);
+      \draw[fl] (tc.south) -- node[flab,pos=0.5]{fill} (t0.north);
+      \draw[fl] (t1.south) to[out=-90,in=50] node[dlab,pos=0.55]{drain} (cuda.north);
+      \draw[fl] (cuda.west) to[out=180,in=-5] node[flab,pos=0.5]{fill} (e1.east);
+      \draw[fl] (e0.west) to[out=180,in=-90] node[dlab,pos=0.4]{drain} (tma.south);
+      \draw[fl] ([yshift=-4pt]tma.west) -- node[below,font=\tiny]{store} ([yshift=-4pt]hbm.east);
+    }
   \end{tikzpicture}
   \end{center}
   \vspace{0.05cm}
   \small
-  \only<1>{\textbf{1.} TMA loads a tile into compute buffer \code{c0}. Every other engine waits.}%
-  \only<2>{\textbf{2.} TMA loads the next tile into \code{c1} while the MMA consumes \code{c0} and accumulates into TMEM \code{t0}. The epilogue waits.}%
-  \only<3>{\textbf{3.} The CUDA cores drain \code{t0} into store buffer \code{e0} while the MMA accumulates the next tile into \code{t1} --- and TMA keeps loading.}%
-  \only<4>{\textbf{4.} TMA now also \emph{stores} --- writing \code{e0} to HBM while the CUDA cores fill \code{e1}. Every engine is busy, double-buffered at each stage.}
+  \only<1>{\textbf{1.} TMA \textbf{fills} compute buffer \code{c0}. Every other engine waits.}%
+  \only<2>{\textbf{2.} TMA fills \code{c1} while the MMA \textbf{drains} \code{c0} and fills TMEM \code{t0}. The epilogue waits.}%
+  \only<3>{\textbf{3.} CUDA cores drain \code{t0} into store \code{e0} while the MMA fills \code{t1} (draining \code{c1}) --- and TMA keeps loading \code{c0}.}%
+  \only<4>{\textbf{4.} TMA now also \emph{stores} --- draining \code{e0} to HBM while CUDA cores fill \code{e1}. Every engine busy, double-buffered at each stage.}
 \end{frame}
 
 \begin{frame}{When Can an Operation Start?}
