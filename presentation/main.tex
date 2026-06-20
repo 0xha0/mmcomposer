@@ -1140,7 +1140,8 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
 
 \begin{frame}{Epilogue Design: TMEM Layout}
   TMEM is laid out for MMA accumulation: \code{tcgen05.ld} reads it
-  \textbf{one column at a time}, with each \textbf{thread mapped to a row}.
+  \textbf{one column at a time}, with each \textbf{thread mapped to a row}. It has
+  \textbf{128 rows} (the $BM{=}128$ lanes); we draw only 8.
 
   \vspace{0.2cm}
   \begin{center}
@@ -1163,6 +1164,10 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
           \fi
         }
       }
+      % truncation cue: rows continue to 127
+      \node[tlabel] at (-5.05,-1.9) {$\vdots$};
+      \foreach \c in {0,...,7} {\node[font=\scriptsize, text=black!55] at (-4.6 + 0.46*\c,-1.9) {$\vdots$};}
+      \node[font=\scriptsize, text=mmgray, anchor=west] at (-1.45,-1.9) {\,128 rows};
 
       \draw[-{Latex[length=2mm]}, very thick, draw=mmsignal]
         (-4.6 + 0.46*5, 2.15) -- (-4.6 + 0.46*5, 1.78);
@@ -1208,6 +1213,9 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
           \fi
         }
       }
+      \node[tlabel] at (-5.15,-1.9) {$\vdots$};
+      \foreach \c in {0,...,7} {\node[font=\scriptsize, text=black!55] at (-4.7 + 0.44*\c,-1.9) {$\vdots$};}
+      \node[font=\scriptsize, text=mmgray, anchor=west] at (-1.5,-1.9) {\,128 rows};
       \node[font=\scriptsize\bfseries, text=mmsignal, anchor=south] at (-4.7+0.44*5,1.95) {one \code{tcgen05.ld}};
       % registers
       \node[font=\scriptsize, text=mmgray] at (0.1,1.95) {registers};
@@ -1255,8 +1263,11 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
       \foreach \d in {1,3,5} {
         \draw[black!45] (-4.6 + 0.44*\d + 0.22, 1.66) -- (-4.6 + 0.44*\d + 0.22, -1.68);
       }
+      \node[tlabel] at (-5.05,-1.88) {$\vdots$};
+      \foreach \c in {0,...,7} {\node[font=\scriptsize, text=black!55] at (-4.6 + 0.44*\c,-1.88) {$\vdots$};}
+      \foreach \c in {0,1} {\node[font=\scriptsize, text=black!55] at (2.6 + 0.44*\c,-1.88) {$\vdots$};}
       \node[font=\scriptsize, text=mmgray] at (-3.5,2.05) {TMEM: 256 cols, 4 chunks};
-      \node[font=\scriptsize\bfseries, text=mmsignal] at (-1.84,-2.0) {one 64-col chunk};
+      \node[font=\scriptsize\bfseries, text=mmsignal] at (-1.84,-2.35) {one 64-col chunk};
       % registers: the loaded chunk (one slice)
       \foreach \r in {0,...,7} {
         \foreach \c in {0,1} {
@@ -1264,7 +1275,7 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
         }
       }
       \node[font=\scriptsize, text=mmgray] at (2.82,2.05) {registers};
-      \node[font=\scriptsize, text=mmgray] at (2.82,-2.0) {one chunk};
+      \node[font=\scriptsize, text=mmgray] at (2.82,-2.35) {one chunk};
       \draw[arrow] (-1.1,0) -- node[above, font=\scriptsize\bfseries]{load chunk} (2.0,0);
     \end{tikzpicture}
   \end{center}
