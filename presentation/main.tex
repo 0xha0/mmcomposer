@@ -1293,19 +1293,19 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   \vspace{0.4cm}
   \begin{center}
   \begin{tikzpicture}[font=\scriptsize, scale=0.92, transform shape,
-      blk/.style={draw, thick, rounded corners=1pt, align=center, minimum height=1.5cm, minimum width=1.8cm, font=\scriptsize},
-      sect/.style={draw=black!35, fill=green!35, minimum width=1.5cm, minimum height=0.34cm},
+      blk/.style={draw, thick, rounded corners=1pt, align=center, minimum height=2.2cm, minimum width=1.8cm, font=\scriptsize},
+      sect/.style={draw=black!35, fill=green!35, minimum width=1.5cm, minimum height=0.42cm},
       ar/.style={-{Latex[length=2.2mm]}, very thick, draw=mmblue}]
     \node[blk, fill=orange!22] (reg) at (0,0) {registers\\$128\times64$\\fp32};
     \node[blk, fill=orange!12] (sm) at (3.4,0) {SMEM buffer\\$128\times64$\\bf16};
     \draw[ar] (reg) -- node[above]{downcast} (sm);
     % HBM: contiguous, full 128-B sectors
-    \node[font=\scriptsize, text=mmgray] at (7.1,1.2) {HBM (128-B transactions)};
-    \foreach \i in {0,1,2,3} {
-      \node[sect] at (7.1, 0.55 - 0.4*\i) {};
+    \node[font=\scriptsize, text=mmgray] at (7.1,1.4) {HBM (128-B transactions)};
+    \foreach \i in {0,...,4} {
+      \node[sect] at (7.1, 0.96 - 0.48*\i) {};
     }
     \draw[ar] (sm.east) -- node[above]{TMA store} (6.35,0);
-    \node[text=green!45!black, align=center] at (7.1,-1.35) {full transactions\\$\Rightarrow$ \textbf{coalesced}};
+    \node[text=green!45!black, align=center] at (7.1,-1.55) {full transactions\\$\Rightarrow$ \textbf{coalesced}};
   \end{tikzpicture}
   \end{center}
 \end{frame}
