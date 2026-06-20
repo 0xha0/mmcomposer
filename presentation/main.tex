@@ -254,12 +254,8 @@
   \vspace{0.3cm}
   \begin{center}
   \begin{tikzpicture}[font=\scriptsize, scale=0.95, transform shape]
-    \draw[thick, fill=green!8] (0,0) rectangle (6.4,2.2);
-    \fill[orange!22] (0,0) rectangle (3.2,2.2);
-    \draw[thick] (0,0) rectangle (6.4,2.2);
-    \draw[dashed, black!45] (3.2,0) -- (3.2,2.2);
-    \node[align=center, font=\scriptsize\bfseries] at (1.6,1.1) {$128\times256$\\ accumulator};
-    \node[align=center, font=\scriptsize, text=mmgray] at (4.8,1.1) {room for a\\ 2nd buffer};
+    \draw[thick, fill=green!10] (0,0) rectangle (6.4,2.2);
+    \node[font=\scriptsize\bfseries, text=mmgray] at (3.2,1.1) {FP32 MMA accumulators};
     \draw[{Latex[length=1.8mm]}-{Latex[length=1.8mm]}, draw=mmblue] (-0.45,0) -- (-0.45,2.2);
     \node[rotate=90, font=\scriptsize\bfseries, text=mmblue] at (-0.82,1.1) {128 rows};
     \draw[{Latex[length=1.8mm]}-{Latex[length=1.8mm]}, draw=mmblue] (0,2.55) -- (6.4,2.55);
