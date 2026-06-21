@@ -529,7 +529,7 @@
   \small
   \only<1>{\textbf{1.} TMA \textbf{fills} compute buffer \code{c0}. Every other engine waits.}%
   \only<2>{\textbf{2.} TMA fills \code{c1} while the MMA \textbf{drains} \code{c0} and fills TMEM \code{t0}. The epilogue waits.}%
-  \only<3>{\textbf{3.} CUDA cores drain \code{t0} into store \code{e0} while the MMA fills \code{t1} (draining \code{c1}) --- and TMA keeps loading \code{c0}.}%
+  \only<3>{\textbf{3.} One output tile has \emph{finished} accumulating, so the CUDA cores drain it (\code{t0}\,$\to$\,store \code{e0}) --- while the MMA accumulates the \textbf{next} output tile into \code{t1}, and TMA keeps loading.}%
   \only<4>{\textbf{4.} TMA now also \emph{stores} --- draining \code{e0} to HBM while CUDA cores fill \code{e1}. Every engine busy, double-buffered at each stage.}
 \end{frame}
 
