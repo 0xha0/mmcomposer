@@ -75,8 +75,6 @@
   \end{itemize}
 \end{frame}
 
-
-
 \section{GEMM and B200 Background}
 \sectionslide{toc:bg}{GEMM and B200 Background}
 
@@ -377,7 +375,6 @@
   shapes --- not the only, nor always the optimal, design.
 \end{frame}
 
-
 \section{Pipelining: Overlap and Synchronization}
 \sectionslide{toc:pipe}{Pipelining: Overlap and Synchronization}
 
@@ -532,65 +529,6 @@
   \only<3>{\textbf{3.} One output tile has \emph{finished} accumulating, so the CUDA cores drain it (\code{t0}\,$\to$\,store \code{e0}) --- while the MMA accumulates the \textbf{next} output tile into \code{t1}, and TMA keeps loading.}%
   \only<4>{\textbf{4.} TMA now also \emph{stores} --- draining \code{e0} to HBM while CUDA cores fill \code{e1}. Every engine busy, double-buffered at each stage.}
 \end{frame}
-
-\begin{frame}{Orchestration: Warps Issue, Engines Run}
-  \begin{center}
-  \begin{tikzpicture}[font=\scriptsize, scale=0.83, transform shape,
-      eng/.style={ellipse, draw, thick, align=center, minimum width=1.8cm, minimum height=0.95cm},
-      buf/.style={draw, thick, rounded corners=1pt, minimum width=0.78cm, minimum height=0.55cm, align=center},
-      warp/.style={draw, thick, rounded corners=2pt, minimum width=1.35cm, minimum height=0.6cm, align=center, font=\tiny, fill=blue!9},
-      off/.style={fill=black!4, draw=black!30, text=black!45},
-      fl/.style={-{Latex[length=2mm]}, very thick, draw=mmblue},
-      flab/.style={font=\tiny, text=mmblue, fill=white, inner sep=0.6pt},
-      sig/.style={-{Stealth[length=2mm]}, very thick, densely dashed, draw=mmsignal},
-      slab/.style={font=\tiny\bfseries, text=mmsignal, fill=white, inner sep=0.8pt}]
-    \draw[draw=mmgray, thick, dashed, rounded corners=5pt] (-6.7,-2.85) rectangle (6.6,2.85);
-    \node[font=\scriptsize\bfseries, text=mmgray, anchor=north west] at (-6.65,2.8) {one SM};
-    \node[buf, fill=gray!12, minimum width=1.0cm, minimum height=0.9cm] (hbm) at (-7.7,0) {HBM};
-    \node[eng, alt=<2->{fill=teal!16}{off}] (tma) at (-5.3,0) {TMA\\engine};
-    \node[buf, alt=<2->{fill=teal!16}{off}] (c0) at (-3.1,1.5) {c0};
-    \node[buf, off] (c1) at (-2.05,1.5) {c1};
-    \node[buf, alt=<8->{fill=orange!18}{off}] (e0) at (-3.1,-1.5) {e0};
-    \node[buf, off] (e1) at (-2.05,-1.5) {e1};
-    \node[eng, minimum width=2.1cm, alt=<5->{fill=green!14}{off}] (tc) at (4.3,1.7) {Tensor Core};
-    \node[buf, alt=<5->{fill=green!16}{off}] (t0) at (3.8,0.3) {t0};
-    \node[buf, off] (t1) at (4.85,0.3) {t1};
-    \node[eng, minimum width=2.1cm, alt=<8->{fill=orange!14}{off}] (cuda) at (4.3,-1.7) {CUDA cores};
-    \node[warp, alt=<1-3>{draw=mmsignal, line width=1pt}{}] (wtma) at (-0.5,0.85) {TMA load};
-    \node[warp, alt=<3-5>{draw=mmsignal, line width=1pt}{}] (wmma) at (1.15,0.85) {MMA};
-    \node[warp, alt=<6-8>{draw=mmsignal, line width=1pt}{}] (wepi) at (1.15,-0.85) {epilogue};
-    \node[warp, alt=<9-11>{draw=mmsignal, line width=1pt}{}] (wst) at (-0.5,-0.85) {TMA store};
-    \node[font=\tiny, text=mmgray] at (0.33,1.55) {warps (issue \& wait)};
-    % engine data edges
-    \only<2->{\draw[fl] (hbm) -- (tma); \draw[fl] (tma.north) to[out=90,in=195] node[flab,pos=0.78]{fill} (c0.west);}
-    \only<5->{\draw[fl] (c0.east) to[out=-5,in=160] node[flab,pos=0.5]{drain} (tc.west); \draw[fl] (tc.south) -- node[flab,pos=0.5]{fill} (t0.north);}
-    \only<8->{\draw[fl] (t0.south) to[out=-90,in=120] node[flab,pos=0.5]{drain} (cuda.north); \draw[fl] (cuda.west) to[out=185,in=-8] node[flab,pos=0.5]{fill} (e0.east);}
-    \only<11>{\draw[fl] (e0.south) to[out=-90,in=-90] node[flab,pos=0.5]{drain} (tma.south); \draw[fl] ([yshift=-4pt]tma.west) -- node[below,font=\tiny]{store} ([yshift=-4pt]hbm.east);}
-    % signal edges (one per step)
-    \only<1>{\draw[sig] (wtma.west) to[out=180,in=75] node[slab,pos=0.55]{issue load} (tma.north east);}
-    \only<3>{\draw[sig] (tma.east) to[out=12,in=192] node[slab,pos=0.55]{data ready} (wmma.west);}
-    \only<4>{\draw[sig] (wmma.east) to[out=40,in=185] node[slab,pos=0.5]{issue MMA} (tc.west);}
-    \only<6>{\draw[sig] (tc.south west) to[out=235,in=35] node[slab,pos=0.5]{TMEM ready} (wepi.north east);}
-    \only<7>{\draw[sig] (wepi.east) to[out=-35,in=180] node[slab,pos=0.5]{issue ld+store} (cuda.west);}
-    \only<9>{\draw[sig] (cuda.west) to[out=185,in=-12] node[slab,pos=0.55]{store buf ready} (wst.east);}
-    \only<10>{\draw[sig] (wst.west) to[out=180,in=-75] node[slab,pos=0.55]{issue store} (tma.south east);}
-  \end{tikzpicture}
-  \end{center}
-  \vspace{0.08cm}
-  \footnotesize
-  \only<1>{The \textbf{TMA-load warp} \emph{issues} a load to the TMA engine, then moves on --- every engine still idle.}%
-  \only<2>{The signal ignites the \textbf{TMA engine}: it drains HBM and fills compute buffer \code{c0}.}%
-  \only<3>{When the load completes, the TMA engine signals \textbf{data ready} to the MMA warp.}%
-  \only<4>{The \textbf{MMA warp} issues an MMA to the \textbf{Tensor Core}.}%
-  \only<5>{The Tensor Core ignites: it drains \code{c0} and accumulates into TMEM \code{t0}.}%
-  \only<6>{When the tile's accumulation finishes, the Tensor Core signals \textbf{TMEM ready} to the epilogue warps.}%
-  \only<7>{The \textbf{epilogue warps} issue their TMEM loads + store to the \textbf{CUDA cores}.}%
-  \only<8>{The CUDA cores ignite: they drain \code{t0} and fill store buffer \code{e0}.}%
-  \only<9>{The CUDA cores signal the \textbf{store buffer is ready} to the TMA-store warp.}%
-  \only<10>{The \textbf{TMA-store warp} issues a store to the TMA engine.}%
-  \only<11>{The TMA engine drains \code{e0} and writes it to HBM. The chain then repeats --- overlapped, as the previous slides showed.}
-\end{frame}
-
 
 \begin{frame}{When Can an Operation Start?}
   An operation is schedulable only when both conditions are true:
@@ -1552,7 +1490,6 @@ tcgen05.commit.cta_group::2.mbarrier::arrive::one
   128-bit store issues as 4 identical phases.}
 \end{frame}
 
-
 \begin{frame}{Epilogue Design: Multiple Store Buffers}
   With $\ge 2$ store buffers, one chunk's \textbf{TMA store overlaps the next
   chunk's SMEM write}:
@@ -2062,6 +1999,5 @@ for (int p = 0; p < (BN/64)/2; p++) {          // loop over chunk PAIRS
     feedback that shaped this material.
   \end{center}
 \end{frame}
-
 
 \end{document}
