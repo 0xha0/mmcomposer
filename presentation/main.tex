@@ -579,7 +579,7 @@
   \end{center}
 \end{frame}
 
-\begin{frame}{Per-Slot Synchronization: Warp View}
+\begin{frame}{Per-Slot Synchronization: Engine View}
   \begin{center}
     \begin{tikzpicture}[
         container/.style={circle, draw, thick, minimum size=1.45cm, align=center, font=\small},
@@ -589,15 +589,15 @@
         siglabel/.style={font=\scriptsize\bfseries, align=center, inner sep=1.5pt, fill=white}
       ]
       \node[container, fill=blue!7] (hbm1) at (-5.0,2.05) {HBM};
-      \node[op, fill=teal!10] (tma) at (-1.55,2.05) {TMA warps};
+      \node[op, fill=teal!10] (tma) at (-1.55,2.05) {TMA engine};
       \node[container, fill=teal!8, minimum size=1.75cm] (smem1) at (2.8,2.05) {SMEM\\compute\\buffer};
 
       \node[container, fill=teal!8] (smem2) at (-5.0,0) {SMEM};
-      \node[op, fill=green!10] (mma) at (-1.55,0) {MMA warps};
+      \node[op, fill=green!10] (mma) at (-1.55,0) {Tensor Core};
       \node[container, fill=green!8] (tmem2) at (2.8,0) {TMEM};
 
       \node[container, fill=green!8] (tmem3) at (-5.0,-2.05) {TMEM};
-      \node[op, fill=orange!12, minimum width=2.45cm] (epi) at (-1.55,-2.05) {epilogue warps};
+      \node[op, fill=orange!12, minimum width=2.45cm] (epi) at (-1.55,-2.05) {CUDA cores};
       \node[container, fill=orange!8] (regs) at (2.8,-2.05) {registers};
 
       \draw[flow] (hbm1) -- (tma);
@@ -624,12 +624,13 @@
       \draw[signal, draw=mmsignal] (1.1,-3.05) -- (2.3,-3.05);
       \node[font=\scriptsize, text=mmgray, right] at (2.35,-3.05) {signal};
       \node[font=\scriptsize, text=mmgray, align=center] at (0,-3.55)
-        {* TMEM data ready is sent only after the final MMA finishes.};
+        {Data flows through the engines; the warps issue the work and raise the
+        signals (mbarrier).\\ * TMEM data ready is sent only after the final MMA finishes.};
     \end{tikzpicture}
   \end{center}
 \end{frame}
 
-\begin{frame}{TMA Warp: Issue Load, Signal Data Ready}
+\begin{frame}{TMA Engine: Fill SMEM, then Raise Data Ready}
   \begin{center}
     \begin{tikzpicture}[
         container/.style={circle, draw=black!25, thick, minimum size=1.45cm, align=center, font=\small, fill=black!4, text=black!45},
@@ -652,7 +653,7 @@
       \node[activecontainer] at (hbm1) {};
       \node[font=\small] at (hbm1) {HBM};
 
-      \node[activeop, fill=teal!10] (tma) at (-1.55,2.05) {TMA warps};
+      \node[activeop, fill=teal!10] (tma) at (-1.55,2.05) {TMA engine};
 
       \node[activecontainer, fill=teal!4, minimum size=1.75cm] (smem1) at (2.8,2.05) {};
       \begin{scope}
@@ -664,15 +665,15 @@
       \node[font=\small, align=center] at (smem1) {SMEM\\compute\\buffer};
 
       \node[container] (smem2) at (-5.0,0) {SMEM};
-      \node[op] (mma) at (-1.55,0) {MMA warps};
+      \node[op] (mma) at (-1.55,0) {Tensor Core};
       \node[container] (tmem2) at (2.8,0) {TMEM};
 
       \node[container] (tmem3) at (-5.0,-2.05) {TMEM};
-      \node[op, minimum width=2.45cm] (epi) at (-1.55,-2.05) {epilogue warps};
+      \node[op, minimum width=2.45cm] (epi) at (-1.55,-2.05) {CUDA cores};
       \node[container] (regs) at (2.8,-2.05) {registers};
 
       \draw[activeflow] (hbm1) -- (tma);
-      \draw[activeflow] (tma) -- node[above, font=\scriptsize, text=mmblue] {issue load} (smem1);
+      \draw[activeflow] (tma) -- node[above, font=\scriptsize, text=mmblue] {fill} (smem1);
       \draw[flow] (smem2) -- (mma);
       \draw[flow] (mma) -- (tmem2);
       \draw[flow] (tmem3) -- (epi);
@@ -701,15 +702,15 @@
   \end{center}
 
   \vspace{-0.15cm}
-  \only<1>{The TMA operation can start: the HBM tile is ready, and the SMEM
+  \only<1>{The TMA load can start: the HBM tile is ready, and the SMEM
   compute slot is free.}
-  \only<2>{The TMA warp \textbf{issues} a bulk load; the TMA engine fills the
-  SMEM compute slot.}
-  \only<3>{Once the HBM tile is drained and the SMEM slot is full, the TMA
-  warps send \textbf{compute data ready} to the MMA warps.}
+  \only<2>{The TMA engine reads HBM and \textbf{fills} the SMEM compute slot
+  (the TMA warp issued the copy).}
+  \only<3>{Once the SMEM slot is full, \textbf{compute data ready} is raised to
+  the Tensor Core.}
 \end{frame}
 
-\begin{frame}{MMA Warps: Signal Buffer Free and Data Ready}
+\begin{frame}{Tensor Core: Fill TMEM, then Raise Free + Data Ready}
   \begin{center}
     \begin{tikzpicture}[
         container/.style={circle, draw=black!25, thick, minimum size=1.45cm, align=center, font=\small, fill=black!4, text=black!45},
@@ -724,7 +725,7 @@
         status/.style={font=\scriptsize, text=mmgray}
       ]
       \node[container] (hbm1) at (-5.0,2.05) {HBM};
-      \node[op] (tma) at (-1.55,2.05) {TMA warps};
+      \node[op] (tma) at (-1.55,2.05) {TMA engine};
       \node[container, minimum size=1.75cm] (smem1) at (2.8,2.05) {SMEM\\compute\\buffer};
 
       \node[activecontainer, fill=teal!4] (smem2) at (-5.0,0) {};
@@ -736,7 +737,7 @@
       \node[activecontainer] at (smem2) {};
       \node[font=\small] at (smem2) {SMEM};
 
-      \node[activeop, fill=green!10] (mma) at (-1.55,0) {MMA warps};
+      \node[activeop, fill=green!10] (mma) at (-1.55,0) {Tensor Core};
 
       \node[activecontainer, fill=green!4] (tmem2) at (2.8,0) {};
       \begin{scope}
@@ -748,13 +749,13 @@
       \node[font=\small] at (tmem2) {TMEM};
 
       \node[container] (tmem3) at (-5.0,-2.05) {TMEM};
-      \node[op, minimum width=2.45cm] (epi) at (-1.55,-2.05) {epilogue warps};
+      \node[op, minimum width=2.45cm] (epi) at (-1.55,-2.05) {CUDA cores};
       \node[container] (regs) at (2.8,-2.05) {registers};
 
       \draw[flow] (hbm1) -- (tma);
       \draw[flow] (tma) -- (smem1);
       \draw[activeflow] (smem2) -- (mma);
-      \draw[activeflow] (mma) -- node[above, font=\scriptsize, text=mmblue] {issue MMA} (tmem2);
+      \draw[activeflow] (mma) -- node[above, font=\scriptsize, text=mmblue] {fill} (tmem2);
       \draw[flow] (tmem3) -- (epi);
       \draw[flow] (epi) -- (regs);
 
@@ -785,17 +786,18 @@
   \end{center}
 
   \vspace{-0.15cm}
-  \only<1>{The MMA operation can start: compute data is ready in SMEM, and the
+  \only<1>{The MMA can start: compute data is ready in SMEM, and the
   TMEM accumulator buffer is free.}
-  \only<2>{The MMA warp \textbf{issues} the MMA; the tensor core reads SMEM and accumulates into TMEM.}
-  \only<3>{Once the SMEM input is drained, the MMA warps send
-  \textbf{compute buffer free} back to TMA.}
-  \only<4>{After the final MMA for this output tile, the MMA warps send
-  \textbf{TMEM data ready} to the epilogue warps.\\[-0.05cm]
+  \only<2>{The Tensor Core reads SMEM and \textbf{accumulates} into TMEM
+  (the MMA warp issued the MMA).}
+  \only<3>{Once the SMEM input is drained, \textbf{compute buffer free} is
+  raised back to the TMA engine.}
+  \only<4>{After the final MMA for this output tile, \textbf{TMEM data ready}
+  is raised to the CUDA cores.\\[-0.05cm]
   \footnotesize * data ready is sent only after the final MMA finishes.}
 \end{frame}
 
-\begin{frame}{Epilogue Warps: Drain TMEM, Signal Buffer Free}
+\begin{frame}{CUDA Cores: Drain TMEM, then Raise Buffer Free}
   \begin{center}
     \begin{tikzpicture}[
         container/.style={circle, draw=black!25, thick, minimum size=1.45cm, align=center, font=\small, fill=black!4, text=black!45},
@@ -810,11 +812,11 @@
         status/.style={font=\scriptsize, text=mmgray}
       ]
       \node[container] (hbm1) at (-5.0,2.05) {HBM};
-      \node[op] (tma) at (-1.55,2.05) {TMA warps};
+      \node[op] (tma) at (-1.55,2.05) {TMA engine};
       \node[container, minimum size=1.75cm] (smem1) at (2.8,2.05) {SMEM\\compute\\buffer};
 
       \node[container] (smem2) at (-5.0,0) {SMEM};
-      \node[op] (mma) at (-1.55,0) {MMA warps};
+      \node[op] (mma) at (-1.55,0) {Tensor Core};
       \node[container] (tmem2) at (2.8,0) {TMEM};
 
       \node[activecontainer, fill=green!4] (tmem3) at (-5.0,-2.05) {};
@@ -826,7 +828,7 @@
       \node[activecontainer] at (tmem3) {};
       \node[font=\small] at (tmem3) {TMEM};
 
-      \node[activeop, fill=orange!12] (epi) at (-1.55,-2.05) {epilogue warps};
+      \node[activeop, fill=orange!12] (epi) at (-1.55,-2.05) {CUDA cores};
 
       \node[activecontainer, fill=orange!4] (regs) at (2.8,-2.05) {};
       \begin{scope}
@@ -842,7 +844,7 @@
       \draw[flow] (smem2) -- (mma);
       \draw[flow] (mma) -- (tmem2);
       \draw[activeflow] (tmem3) -- (epi);
-      \draw[activeflow] (epi) -- node[above, font=\scriptsize, text=mmblue] {issue ld} (regs);
+      \draw[activeflow] (epi) -- node[above, font=\scriptsize, text=mmblue] {fill} (regs);
 
       \draw[signal] (-1.00,1.625) -- (-1.00,0.425);
       \draw[signal] (-2.10,0.425) -- (-2.10,1.625);
@@ -869,9 +871,10 @@
   \vspace{-0.15cm}
   \only<1>{The epilogue can start: TMEM data is ready, and the register
   destination is available.}
-  \only<2>{The epilogue warps \textbf{issue} \code{tcgen05.ld}; the load path drains TMEM into their registers.}
-  \only<3>{Once TMEM is drained, the epilogue warps send
-  \textbf{TMEM buffer free} back to the MMA warps.}
+  \only<2>{The CUDA cores \textbf{drain} TMEM into registers with
+  \code{tcgen05.ld} (the epilogue warps issued the load).}
+  \only<3>{Once TMEM is drained, \textbf{TMEM buffer free} is raised back to
+  the Tensor Core.}
 \end{frame}
 
 \begin{frame}{Using Multiple Buffers}
