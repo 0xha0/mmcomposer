@@ -298,8 +298,8 @@ __device__ __forceinline__ void matmul_cluster_impl(
         return SMEM_BASE + s * SLOT_BYTES + A_SLOT_BYTES;
     };
 
-    __shared__ uint64_t mbar_smem_compute_full[NS];
-    __shared__ uint64_t mbar_smem_compute_free[NS];
+    __shared__ uint64_t mbar_compute_data_ready[NS];
+    __shared__ uint64_t mbar_compute_buffer_free[NS];
     __shared__ uint64_t all_mmas_done;
     __shared__ uint32_t tmem_addr_holder[1];
 
@@ -311,8 +311,8 @@ __device__ __forceinline__ void matmul_cluster_impl(
         // Persistent cluster pipeline: both CTAs stream A/B, CTA 0 issues
         // cta_group::2 MMA into a two-buffer TMEM accumulator, and every CTA
         // drains its own BM x BN output half while the next cluster tile runs.
-        __shared__ uint64_t mbar_tmem_full[2];
-        __shared__ uint64_t mbar_tmem_free[2];
+        __shared__ uint64_t mbar_tmem_data_ready[2];
+        __shared__ uint64_t mbar_tmem_buffer_free[2];
         // Pipelined TMA-store mode keeps the K-loop ring intact and reserves
         // compact 128B-swizzled SMEM buffers for chunked TMA stores.
         constexpr int STORE_BUF_BYTES = BM * STORE_N * BF16_BYTES;
@@ -325,17 +325,17 @@ __device__ __forceinline__ void matmul_cluster_impl(
         if (warp_id == 0 && elect_sync()) {
             #pragma unroll
             for (int s = 0; s < NS; s++) {
-                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_smem_compute_full[s]), CTA_GROUP);
-                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_smem_compute_free[s]), 1);
-                mbarrier_arrive_no_tx((uint32_t)__cvta_generic_to_shared(&mbar_smem_compute_free[s]));
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[s]), CTA_GROUP);
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[s]), 1);
+                mbarrier_arrive_no_tx((uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[s]));
             }
             #pragma unroll
             for (int b = 0; b < 2; b++) {
-                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_tmem_full[b]), 1);
-                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_tmem_free[b]), CTA_GROUP);
-                uint32_t tmem_free_cta0 =
-                    ((uint32_t)__cvta_generic_to_shared(&mbar_tmem_free[b])) & 0xFEFFFFFFu;
-                mbarrier_arrive_no_tx_cluster(tmem_free_cta0);
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[b]), 1);
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[b]), CTA_GROUP);
+                uint32_t tmem_buffer_free_cta0 =
+                    ((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[b])) & 0xFEFFFFFFu;
+                mbarrier_arrive_no_tx_cluster(tmem_buffer_free_cta0);
             }
             asm volatile("fence.mbarrier_init.release.cluster;");
         }
@@ -371,53 +371,53 @@ __device__ __forceinline__ void matmul_cluster_impl(
         };
 
         if (warp_id == 0 && elect_sync()) {
-            uint32_t smem_compute_free_phase[NS] = {};
+            uint32_t compute_buffer_free_phase[NS] = {};
             long gk = 0;
             for (int ti = 0; ti < num_my; ti++) {
                 int base_m, base_n, local_m, local_n;
                 map_off(ti, base_m, base_n, local_m, local_n);
                 for (int k = 0; k < num_k; k++) {
                     int slot = gk % NS;
-                    uint32_t smem_compute_free_addr =
-                        (uint32_t)__cvta_generic_to_shared(&mbar_smem_compute_free[slot]);
-                    uint32_t smem_compute_full_cta0 =
-                        ((uint32_t)__cvta_generic_to_shared(&mbar_smem_compute_full[slot])) & 0xFEFFFFFFu;
-                    wait_phase(smem_compute_free_addr, smem_compute_free_phase[slot]);
-                    tma_2d_load_g2(A_base(slot), A_tmap, k * BK, local_m, smem_compute_full_cta0);
+                    uint32_t compute_buffer_free_addr =
+                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
+                    uint32_t compute_data_ready_cta0 =
+                        ((uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[slot])) & 0xFEFFFFFFu;
+                    wait_phase(compute_buffer_free_addr, compute_buffer_free_phase[slot]);
+                    tma_2d_load_g2(A_base(slot), A_tmap, k * BK, local_m, compute_data_ready_cta0);
                     #pragma unroll
                     for (int n = 0; n < BN_LOCAL; n += 64) {
                         tma_2d_load_g2(B_base(slot) + n * BK * BF16_BYTES,
-                                       B_tmap, local_n + n, k * BK, smem_compute_full_cta0);
+                                       B_tmap, local_n + n, k * BK, compute_data_ready_cta0);
                     }
-                    signal_on_bytes_loaded(smem_compute_full_cta0, SLOT_BYTES);
-                    smem_compute_free_phase[slot] ^= 1;
+                    signal_on_bytes_loaded(compute_data_ready_cta0, SLOT_BYTES);
+                    compute_buffer_free_phase[slot] ^= 1;
                     gk++;
                 }
             }
         } else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {
-            uint32_t smem_compute_full_phase[NS] = {};
-            uint32_t tmem_free_phase[2] = {};
+            uint32_t compute_data_ready_phase[NS] = {};
+            uint32_t tmem_buffer_free_phase[2] = {};
             long gk = 0;
             for (int ti = 0; ti < num_my; ti++) {
                 int buf = ti & 1;
                 uint32_t d_tmem = taddr + buf * BN;
-                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_free[buf]),
-                                    tmem_free_phase[buf]);
-                tmem_free_phase[buf] ^= 1;
+                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[buf]),
+                                    tmem_buffer_free_phase[buf]);
+                tmem_buffer_free_phase[buf] ^= 1;
                 for (int k = 0; k < num_k; k++) {
                     int slot = gk % NS;
-                    uint32_t smem_compute_full_addr =
-                        (uint32_t)__cvta_generic_to_shared(&mbar_smem_compute_full[slot]);
-                    uint32_t smem_compute_free_addr =
-                        (uint32_t)__cvta_generic_to_shared(&mbar_smem_compute_free[slot]);
-                    wait_phase(smem_compute_full_addr, smem_compute_full_phase[slot]);
+                    uint32_t compute_data_ready_addr =
+                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[slot]);
+                    uint32_t compute_buffer_free_addr =
+                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
+                    wait_phase(compute_data_ready_addr, compute_data_ready_phase[slot]);
                     tcgen05_fence_after_thread_sync();
                     issue_mma_chain(d_tmem, A_base(slot), B_base(slot), idesc, /*first_k_tile=*/ k == 0);
-                    signal_on_mma_completion(smem_compute_free_addr, cta_mask);
-                    smem_compute_full_phase[slot] ^= 1;
+                    signal_on_mma_completion(compute_buffer_free_addr, cta_mask);
+                    compute_data_ready_phase[slot] ^= 1;
                     gk++;
                 }
-                signal_on_mma_completion((uint32_t)__cvta_generic_to_shared(&mbar_tmem_full[buf]), cta_mask);
+                signal_on_mma_completion((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[buf]), cta_mask);
             }
         } else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {
             // Contract for the shared overlap-drain fragment: cluster tier writes
@@ -425,7 +425,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
             // TMEM buffer with a CTA-0-masked cluster arrive.
 #define EPI_OUT_ROW                 local_m
 #define EPI_OUT_COL_BASE            base_n
-#define signal_sync(buf)   do { uint32_t _f = ((uint32_t)__cvta_generic_to_shared(&mbar_tmem_free[buf])) & 0xFEFFFFFFu; mbarrier_arrive_no_tx_cluster(_f); } while (0)
+#define signal_sync(buf)   do { uint32_t _f = ((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[buf])) & 0xFEFFFFFFu; mbarrier_arrive_no_tx_cluster(_f); } while (0)
             constexpr int ROW_STRIPS    = BM / 32;
             constexpr int COL_GROUPS    = NUM_WARPS / ROW_STRIPS;
             constexpr int COLS_PER_WARP = BN / COL_GROUPS;
@@ -441,7 +441,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 int base_m, base_n, local_m, local_n;
                 int buf = ti & 1;
                 map_off(ti, base_m, base_n, local_m, local_n);
-                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_full[buf]), full[buf]);
+                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[buf]), full[buf]);
                 full[buf] ^= 1;
                 tcgen05_fence_after_thread_sync();
                 const uint32_t trow =
