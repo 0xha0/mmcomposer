@@ -115,23 +115,24 @@
 \begin{frame}{Naive Access Pattern: One Thread per Output}
   \begin{center}
   \begin{tikzpicture}[transform shape, font=\scriptsize,
-      cell/.style={draw=black!35, line width=0.3pt},
+      cell/.style={draw=black!35, line width=0.25pt},
       lab/.style={font=\small}]
-    % output C grid (6 cols x 5 rows); highlight one cell (c=3, r=2)
-    \foreach \c in {0,...,5}{\foreach \r in {0,...,4}{
-      \ifnum\c=3 \ifnum\r=2 \fill[orange!45] (\c*0.4,\r*0.4) rectangle ++(0.4,0.4);\fi\fi
-      \draw[cell] (\c*0.4,\r*0.4) rectangle ++(0.4,0.4);}}
-    % A grid (3 cols x 5 rows) at left; highlight row r=2
-    \foreach \k in {0,...,2}{\foreach \r in {0,...,4}{
-      \ifnum\r=2 \fill[blue!22] (-1.5+\k*0.4,\r*0.4) rectangle ++(0.4,0.4);\fi
-      \draw[cell] (-1.5+\k*0.4,\r*0.4) rectangle ++(0.4,0.4);}}
-    % B grid (6 cols x 3 rows) on top; highlight col c=3
-    \foreach \c in {0,...,5}{\foreach \k in {0,...,2}{
-      \ifnum\c=3 \fill[blue!22] (\c*0.4,2.3+\k*0.4) rectangle ++(0.4,0.4);\fi
-      \draw[cell] (\c*0.4,2.3+\k*0.4) rectangle ++(0.4,0.4);}}
-    \node[lab] at (-0.9,-0.40) {$A$};
+    % output C grid (12 cols x 10 rows -- small cells = single elements);
+    % highlight one cell (c=6, r=5)
+    \foreach \c in {0,...,11}{\foreach \r in {0,...,9}{
+      \ifnum\c=6 \ifnum\r=5 \fill[orange!45] (\c*0.2,\r*0.2) rectangle ++(0.2,0.2);\fi\fi
+      \draw[cell] (\c*0.2,\r*0.2) rectangle ++(0.2,0.2);}}
+    % A grid (4 cols x 10 rows) at left; highlight row r=5
+    \foreach \k in {0,...,3}{\foreach \r in {0,...,9}{
+      \ifnum\r=5 \fill[blue!22] (-1.1+\k*0.2,\r*0.2) rectangle ++(0.2,0.2);\fi
+      \draw[cell] (-1.1+\k*0.2,\r*0.2) rectangle ++(0.2,0.2);}}
+    % B grid (12 cols x 4 rows) on top; highlight col c=6
+    \foreach \c in {0,...,11}{\foreach \k in {0,...,3}{
+      \ifnum\c=6 \fill[blue!22] (\c*0.2,2.3+\k*0.2) rectangle ++(0.2,0.2);\fi
+      \draw[cell] (\c*0.2,2.3+\k*0.2) rectangle ++(0.2,0.2);}}
+    \node[lab] at (-0.7,-0.40) {$A$};
     \node[lab] at (1.2,-0.40)  {$C$};
-    \node[lab] at (1.2,3.72)   {$B$};
+    \node[lab] at (1.2,3.40)   {$B$};
   \end{tikzpicture}
   \end{center}
 
