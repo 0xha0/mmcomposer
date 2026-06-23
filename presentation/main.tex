@@ -1429,7 +1429,7 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
     \item \textbf{Timer}: Triton's \code{triton.testing.do\_bench}.
     \item \textbf{Cold cache}: \code{do\_bench} flushes a 256\,MB buffer through
       L2 between samples --- no warm-L2 inflation.
-    \item \textbf{Windows}: \textbf{500\,ms} warmup, \textbf{500\,ms} measured;
+    \item \textbf{Time window}: \textbf{500\,ms} warmup, \textbf{500\,ms} measured;
       report the \textbf{median} latency (min/max tracked too).
     \item \textbf{Reference}: cuBLAS measured on the same GPU;
       $\text{TFLOPS} = 2MNK / t$.
