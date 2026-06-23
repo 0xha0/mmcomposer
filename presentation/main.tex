@@ -596,7 +596,7 @@
   and \textbf{buffer free}.
 \end{frame}
 
-\begin{frame}{TMA Engine \only<1>{--- start on \emph{compute buffer free}}\only<2>{--- done: \emph{compute data ready}}}
+\begin{frame}{TMA Engine \only<1>{--- start on \code{compute\_buffer\_free}}\only<2>{--- done: \code{compute\_data\_ready}}}
   \begin{center}
     \begin{tikzpicture}[
         container/.style={draw, thick, rounded corners=2pt, minimum width=2.0cm, minimum height=1.5cm, align=center, font=\small},
@@ -626,11 +626,11 @@
       \draw[flow] (eng) -- node[above, font=\scriptsize, text=mmblue] {fill} (out);
 
       \only<1>{
-        \node[event] (ein) at (2.7,2.15) {receives \textbf{compute buffer free}};
+        \node[event] (ein) at (2.7,2.15) {receives \code{compute\_buffer\_free}};
         \draw[evarrow] (ein) to[bend left=12] (out.north);
       }
       \only<2>{
-        \node[event] (eout) at (2.7,2.15) {raises \textbf{compute data ready}};
+        \node[event] (eout) at (2.7,2.15) {raises \code{compute\_data\_ready}};
         \draw[evarrow] (out.north) to[bend right=12] (eout);
       }
 
@@ -640,14 +640,14 @@
   \end{center}
 
   \vspace{0.05cm}
-  \only<1>{\textbf{Trigger --- event received:} \code{compute buffer free} --- the
+  \only<1>{\textbf{Trigger --- event received:} \code{compute\_buffer\_free} --- the
     SMEM compute slot is free (initially; later freed by the MMA). The TMA engine
     then fills it from HBM.}
-  \only<2>{\textbf{On completion --- event sent:} \code{compute data ready} ---
+  \only<2>{\textbf{On completion --- event sent:} \code{compute\_data\_ready} ---
     which is exactly the trigger for the next stage.}
 \end{frame}
 
-\begin{frame}{Tensor Core \only<1>{--- start on \emph{compute data ready}}\only<2>{--- done: \emph{compute buffer free}}\only<3>{--- done: \emph{TMEM data ready}}}
+\begin{frame}{Tensor Core \only<1>{--- start on \code{compute\_data\_ready}}\only<2>{--- done: \code{compute\_buffer\_free}}\only<3>{--- done: \code{tmem\_data\_ready}}}
   \begin{center}
     \begin{tikzpicture}[
         container/.style={draw, thick, rounded corners=2pt, minimum width=2.0cm, minimum height=1.5cm, align=center, font=\small},
@@ -678,15 +678,15 @@
       \draw[flow] (eng) -- node[above, font=\scriptsize, text=mmblue] {fill} (out);
 
       \only<1>{
-        \node[event] (ein) at (-1.9,2.15) {receives \textbf{compute data ready}};
+        \node[event] (ein) at (-1.9,2.15) {receives \code{compute\_data\_ready}};
         \draw[evarrow] (ein) to[bend right=12] (in.north);
       }
       \only<2>{
-        \node[event] (e1) at (-3.1,2.15) {raises \textbf{compute buffer free}};
+        \node[event] (e1) at (-3.1,2.15) {raises \code{compute\_buffer\_free}};
         \draw[evarrow] (in.north) to[bend left=12] (e1);
       }
       \only<3>{
-        \node[event] (e2) at (3.5,2.15) {raises \textbf{TMEM data ready}};
+        \node[event] (e2) at (3.5,2.15) {raises \code{tmem\_data\_ready}};
         \draw[evarrow] (out.north) to[bend right=12] (e2);
       }
 
@@ -696,17 +696,17 @@
   \end{center}
 
   \vspace{0.05cm}
-  \only<1>{\textbf{Trigger --- event received:} \code{compute data ready} --- the
+  \only<1>{\textbf{Trigger --- event received:} \code{compute\_data\_ready} --- the
     tile the TMA just delivered (and the TMEM accumulator is free). The Tensor Core
     accumulates it into TMEM.}
   \only<2>{\textbf{On completion --- event sent:} each MMA consumes its SMEM tile,
-    so \code{compute buffer free} goes back to the TMA --- but the TMEM accumulator
+    so \code{compute\_buffer\_free} goes back to the TMA --- but the TMEM accumulator
     is still only partly filled.}
   \only<3>{\textbf{After the tile's final MMA:} the TMEM result is complete, so
-    \code{TMEM data ready} goes forward to the epilogue.}
+    \code{tmem\_data\_ready} goes forward to the epilogue.}
 \end{frame}
 
-\begin{frame}{CUDA Cores \only<1>{--- start on \emph{TMEM data ready}}\only<2>{--- done: \emph{TMEM buffer free}}}
+\begin{frame}{CUDA Cores \only<1>{--- start on \code{tmem\_data\_ready}}\only<2>{--- done: \code{tmem\_buffer\_free}}}
   \begin{center}
     \begin{tikzpicture}[
         container/.style={draw, thick, rounded corners=2pt, minimum width=2.0cm, minimum height=1.5cm, align=center, font=\small},
@@ -736,11 +736,11 @@
       \draw[flow] (eng) -- (out);
 
       \only<1>{
-        \node[event] (ein) at (-1.9,2.15) {receives \textbf{TMEM data ready}};
+        \node[event] (ein) at (-1.9,2.15) {receives \code{tmem\_data\_ready}};
         \draw[evarrow] (ein) to[bend right=12] (in.north);
       }
       \only<2>{
-        \node[event] (eout) at (-1.9,2.15) {raises \textbf{TMEM buffer free}};
+        \node[event] (eout) at (-1.9,2.15) {raises \code{tmem\_buffer\_free}};
         \draw[evarrow] (in.north) to[bend left=12] (eout);
       }
 
@@ -750,10 +750,10 @@
   \end{center}
 
   \vspace{0.05cm}
-  \only<1>{\textbf{Trigger --- event received:} \code{TMEM data ready} from the
+  \only<1>{\textbf{Trigger --- event received:} \code{tmem\_data\_ready} from the
     final MMA (and the register destination is free). The CUDA cores drain TMEM
     into registers with \code{tcgen05.ld}.}
-  \only<2>{\textbf{On completion --- event sent:} \code{TMEM buffer free} back
+  \only<2>{\textbf{On completion --- event sent:} \code{tmem\_buffer\_free} back
     to the Tensor Core, so the next tile can accumulate.}
 \end{frame}
 
@@ -1503,7 +1503,9 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
     \setlength{\tabcolsep}{6pt}
     \begin{tabular}{rrrrrrr}
       \toprule
-      shape & cuBLAS & MMC & \% & $BN$ & $NS$ & store \\
+      & \multicolumn{2}{c}{TFLOPS} & & & & \\
+      \cmidrule(lr){2-3}
+      shape & cuBLAS & ours & \% & $BN$ & $NS$ & store \\
       \midrule
       $4096^3$  & 1382 & 1354 &  98 & 256 & 6 & 1 \\
       $5120^3$  & 1432 & 1373 &  96 & 512 & 4 & 2 \\
@@ -1519,7 +1521,7 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \end{center}
 
   \vspace{0.15cm}
-  {\footnotesize TFLOPS (B200, BF16). \textbf{$BN$ / $NS$ / store} is the SMEM
+  {\footnotesize Measured on a B200, BF16. \textbf{$BN$ / $NS$ / store} is the SMEM
   partition: $NS$ compute slots of a $BN$-wide tile $+$ \emph{store} TMA buffers.}
 \end{frame}
 
@@ -1528,7 +1530,9 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
     \setlength{\tabcolsep}{6pt}
     \begin{tabular}{rrrrrrr}
       \toprule
-      shape ($M{\times}N{\times}K$) & cuBLAS & MMC & \% & $BN$ & $NS$ & store \\
+      & \multicolumn{2}{c}{TFLOPS} & & & & \\
+      \cmidrule(lr){2-3}
+      shape ($M{\times}N{\times}K$) & cuBLAS & ours & \% & $BN$ & $NS$ & store \\
       \midrule
       $2048{\times}36864{\times}12288$ & 1517 & 1480 &  98 & 512 & 4 & 2 \\
       $2048{\times}49152{\times}12288$ & 1366 & 1390 & 102 & 512 & 4 & 1 \\
