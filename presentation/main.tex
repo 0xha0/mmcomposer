@@ -1471,7 +1471,7 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
 \begin{frame}{Performance: Square GEMMs vs cuBLAS}
   \begin{center}\small
     MMComposer averages \textbf{$\sim$100\% of cuBLAS} (96--106\% across 20
-    shapes). Each top config \emph{is} an SMEM partition.
+    shapes).
   \end{center}
 
   \vspace{0.1cm}
@@ -1497,8 +1497,8 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \end{center}
 
   \vspace{0.15cm}
-  {\footnotesize Measured on a B200, BF16. \textbf{$BN$ / $NS$ / store} is the SMEM
-  partition: $NS$ compute slots of a $BN$-wide tile $+$ \emph{store} TMA buffers.}
+  {\footnotesize Measured on a B200, BF16; each shape's $BN$ / $NS$ / store is the
+  autotuner's winner.}
 \end{frame}
 
 \begin{frame}{Performance: Rectangular GEMMs vs cuBLAS}
@@ -1526,8 +1526,7 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \end{center}
 
   \vspace{0.15cm}
-  {\footnotesize Wide/short LLM-style shapes. \textbf{$BN$ / $NS$ / store} is the
-  same SMEM partition as the square case --- autotuned per shape.}
+  {\footnotesize Wide/short LLM-style shapes; $BN$ / $NS$ / store autotuned per shape.}
 \end{frame}
 
 \begin{frame}{Future Work}
