@@ -877,21 +877,10 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
 \end{frame}
 
 \begin{frame}{2-CTA MMA: Geometry}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.52\textwidth}
-    \begin{itemize}
-      \item Each CTA loads its $BM \times BK$ slice of A and a $BK \times BN/2$
-        slice of B --- but \textbf{computes a full $BM \times BN$ band}: CTA 0 the
-        top $BM$ rows, CTA 1 the bottom. The MMA reads \emph{both} B halves
-        (cluster-shared), so loading is split while compute spans all of B.
-      \item At $BN{=}256$, per-CTA SMEM per slot drops from \textbf{48\,KB} to \textbf{32\,KB}.
-      \item TMA loads use \code{.cta\_group::2}; the \code{tcgen05.commit}
-        multicasts the completion signal to both CTAs.
-    \end{itemize}
-
-    \column{0.46\textwidth}
-    \begin{center}
-      \begin{tikzpicture}[
+  \begin{center}{\large \textbf{Half-B load \;$\rightarrow$\; full-B compute}}\end{center}
+  \vspace{0.15cm}
+  \begin{center}
+      \begin{tikzpicture}[scale=1.12, transform shape,
           lab/.style={align=center, font=\scriptsize},
           bhlab/.style={align=center, font=\tiny},
           dim/.style={Stealth-Stealth, thin, black!60},
@@ -931,7 +920,12 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
             node[midway, right, dimlab] {$BK$};
       \end{tikzpicture}
     \end{center}
-  \end{columns}
+
+  \vspace{0.3cm}
+  \begin{center}
+    {\large \textbf{$\rightarrow$ unlock more compute buffers}}\\[0.12cm]
+    {\small\color{mmgray} smaller per-CTA B ($BN/2$): $48 \to 32$\,KB per slot at $BN{=}256$}
+  \end{center}
 \end{frame}
 
 \begin{frame}{2-CTA MMA: More Compute Stages}
