@@ -465,7 +465,8 @@
   \end{itemize}
 \end{frame}
 
-\begin{frame}{The Full Picture: Engines Overlap on the SM}
+\begin{frame}[t]{The Full Picture: Engines Overlap on the SM}
+  \vspace{0.35cm}
   \begin{center}
   \begin{tikzpicture}[font=\scriptsize, scale=0.85, transform shape,
       eng/.style={ellipse, draw, thick, align=center, minimum width=1.9cm, minimum height=1.0cm},
@@ -474,6 +475,8 @@
       fl/.style={-{Latex[length=2mm]}, very thick, draw=mmblue},
       flab/.style={font=\tiny\bfseries, text=mmblue, fill=white, inner sep=0.7pt},
       dlab/.style={font=\tiny\bfseries, text=red!62!black, fill=white, inner sep=0.7pt}]
+    % fixed bounding box so the figure never shifts between overlay states
+    \useasboundingbox (-8.1,-2.95) rectangle (6.5,2.95);
     \draw[draw=mmgray, thick, dashed, rounded corners=5pt] (-6.5,-2.75) rectangle (6.4,2.75);
     \node[font=\scriptsize\bfseries, text=mmgray, anchor=north west] at (-6.45,2.7) {one SM};
     \node[buf, fill=gray!12, minimum width=1.0cm, minimum height=0.95cm] (hbm) at (-7.5,0) {HBM};
