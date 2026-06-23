@@ -838,28 +838,24 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
   \vspace{0.1cm}
   \begin{center}
   \begin{tikzpicture}[font=\scriptsize,
-      hl/.style={draw=cyan, line width=1pt, rounded corners=1pt},
-      hllab/.style={font=\tiny\bfseries, fill=white, text=black, inner sep=0.9pt, rounded corners=0.5pt},
+      hllab/.style={font=\tiny\bfseries, fill=white, text=black, inner sep=1.1pt, rounded corners=0.5pt},
+      tclab/.style={font=\small\bfseries, fill=white, fill opacity=0.82, text opacity=1, text=black, inner sep=2.2pt, rounded corners=1.5pt},
       xread/.style={-{Latex[length=2.4mm]}, line width=1.3pt, draw=orange!90!black}]
     \node[inner sep=0] (smL) at (0,0)   {\includegraphics[width=3.2cm]{images/b200_arch.png}};
     \node[inner sep=0] (smR) at (4.3,0) {\includegraphics[width=3.2cm]{images/b200_arch.png}};
     \node[font=\scriptsize\bfseries, text=mmblue, anchor=south, inner sep=1pt] at (smL.north) {SM 0};
     \node[font=\scriptsize\bfseries, text=mmblue, anchor=south, inner sep=1pt] at (smR.north) {SM 1};
-    % highlight boxes over the Tensor-Core block (fx,fy fractional from top-left) and Shared-Memory bar of each SM
-    \node[hl, minimum width=0.92cm, minimum height=0.74cm] (tcL)   at ($($(smL.north west)!0.835!(smL.north east)$)!0.35!($(smL.south west)!0.835!(smL.south east)$)$) {};
-    \node[hl, minimum width=0.92cm, minimum height=0.74cm] (tcR)   at ($($(smR.north west)!0.335!(smR.north east)$)!0.35!($(smR.south west)!0.335!(smR.south east)$)$) {};
-    \node[hl, minimum width=2.9cm,  minimum height=0.30cm] (smemL) at ($($(smL.north west)!0.5!(smL.north east)$)!0.918!($(smL.south west)!0.5!(smL.south east)$)$) {};
-    \node[hl, minimum width=2.9cm,  minimum height=0.30cm] (smemR) at ($($(smR.north west)!0.5!(smR.north east)$)!0.918!($(smR.south west)!0.5!(smR.south east)$)$) {};
-    % cross-SM reads: each SM's tensor cores read the NEIGHBOUR's shared memory (box to box)
-    \draw[white, line width=3.4pt] (smemR.north west) -- (tcL.south);
-    \draw[white, line width=3.4pt] (smemL.north east) -- (tcR.south);
-    \draw[xread] (smemR.north west) -- (tcL.south);
-    \draw[xread] (smemL.north east) -- (tcR.south);
-    % labels (drawn last, on top)
-    \node[hllab] at (tcL)   {Tensor Core};
-    \node[hllab] at (tcR)   {Tensor Core};
-    \node[hllab] at (smemL) {Shared Memory};
-    \node[hllab] at (smemR) {Shared Memory};
+    % named text labels for the connected regions (used as arrow anchors). One Tensor-Core
+    % label per SM, centred to stand for all four physical tensor cores (= one tcgen05 MMA).
+    \node[tclab] (tcL)   at ($($(smL.north west)!0.5!(smL.north east)$)!0.5!($(smL.south west)!0.5!(smL.south east)$)$) {Tensor Core};
+    \node[tclab] (tcR)   at ($($(smR.north west)!0.5!(smR.north east)$)!0.5!($(smR.south west)!0.5!(smR.south east)$)$) {Tensor Core};
+    \node[hllab] (smemL) at ($($(smL.north west)!0.5!(smL.north east)$)!0.918!($(smL.south west)!0.5!(smL.south east)$)$) {Shared Memory};
+    \node[hllab] (smemR) at ($($(smR.north west)!0.5!(smR.north east)$)!0.918!($(smR.south west)!0.5!(smR.south east)$)$) {Shared Memory};
+    % cross-SM reads: each SM's tensor cores read the NEIGHBOUR's shared memory (label to label)
+    \draw[white, line width=3.4pt] (smemR.north) -- (tcL.south);
+    \draw[white, line width=3.4pt] (smemL.north) -- (tcR.south);
+    \draw[xread] (smemR.north) -- (tcL.south);
+    \draw[xread] (smemL.north) -- (tcR.south);
   \end{tikzpicture}
   \end{center}
 
