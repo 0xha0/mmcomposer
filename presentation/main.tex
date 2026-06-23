@@ -94,6 +94,31 @@
   \end{itemize}
 \end{frame}
 
+\begin{frame}{GEMM: Compute Grows Faster Than Data}
+  For \textbf{bf16} (2 bytes/element), one $M\times N\times K$ GEMM:
+  \vspace{0.15cm}
+  \begin{itemize}
+    \item \textbf{Load} $A$ ($M{\times}K$) $+$ $B$ ($K{\times}N$):
+      \quad $2MK + 2KN$ bytes
+    \item \textbf{Store} $C$ ($M{\times}N$): \quad $2MN$ bytes
+    \item \textbf{Compute}: \quad $MNK$ multiply-adds $=2MNK$ FLOPs
+  \end{itemize}
+
+  \vspace{0.25cm}
+  \begin{center}
+    Data moved is $O(N^2)$, but compute is $O(N^3)$ \;$\Rightarrow$\; each input
+    byte feeds $\sim O(N)$ FLOPs.
+  \end{center}
+
+  \vspace{0.15cm}
+  {\small E.g.\ $M{=}N{=}K{=}4096$: $\sim$100\,MB moved vs $\sim$137\,GFLOP
+  $\approx$ \textbf{1300 FLOPs/byte}.}
+
+  \vspace{0.25cm}
+  \centering \textbf{$\Rightarrow$ huge data-reuse opportunity} --- keep tiles
+  on-chip and GEMM becomes \textbf{compute-bound}, not memory-bound.
+\end{frame}
+
 \begin{frame}{Tiling: Where $BM$, $BN$, $BK$ Come From}
   The output is computed in \textbf{tiles}. One CTA (thread block) owns one
   $BM\times BN$ output tile and sweeps $K$ in $BK$-wide chunks:
