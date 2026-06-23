@@ -42,6 +42,7 @@
 
 \title{How to Design a High Performance GEMM Kernel (on Blackwell)?}
 \author{Tong Zhou}
+\institute{Meshy MLSys Group}
 \date{\today}
 
 \newcommand{\code}[1]{\texttt{#1}}
@@ -837,23 +838,28 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
   \vspace{0.1cm}
   \begin{center}
   \begin{tikzpicture}[font=\scriptsize,
-      xread/.style={-{Latex[length=2.4mm]}, line width=1.3pt, draw=orange!85!black}]
+      hl/.style={draw=cyan, line width=1pt, rounded corners=1pt},
+      hllab/.style={font=\tiny\bfseries, fill=white, text=black, inner sep=0.9pt, rounded corners=0.5pt},
+      xread/.style={-{Latex[length=2.4mm]}, line width=1.3pt, draw=orange!90!black}]
     \node[inner sep=0] (smL) at (0,0)   {\includegraphics[width=3.2cm]{images/b200_arch.png}};
     \node[inner sep=0] (smR) at (4.3,0) {\includegraphics[width=3.2cm]{images/b200_arch.png}};
     \node[font=\scriptsize\bfseries, text=mmblue, anchor=south, inner sep=1pt] at (smL.north) {SM 0};
     \node[font=\scriptsize\bfseries, text=mmblue, anchor=south, inner sep=1pt] at (smR.north) {SM 1};
-    % fractional anchor points inside each image (fx from left edge, fy from top edge)
-    % left SM tensor cores (right-hand block) / right SM tensor cores (left-hand block)
-    \coordinate (tcL) at ($($(smL.north west)!0.83!(smL.north east)$)!0.37!($(smL.south west)!0.83!(smL.south east)$)$);
-    \coordinate (tcR) at ($($(smR.north west)!0.33!(smR.north east)$)!0.37!($(smR.south west)!0.33!(smR.south east)$)$);
-    % shared-memory bar of each SM (blue bar near the bottom)
-    \coordinate (smemL) at ($($(smL.north west)!0.66!(smL.north east)$)!0.925!($(smL.south west)!0.66!(smL.south east)$)$);
-    \coordinate (smemR) at ($($(smR.north west)!0.34!(smR.north east)$)!0.925!($(smR.south west)!0.34!(smR.south east)$)$);
-    % cross-SM reads: each SM's tensor cores read the NEIGHBOUR's shared memory
-    \draw[white, line width=3.4pt] (smemR) -- (tcL);
-    \draw[white, line width=3.4pt] (smemL) -- (tcR);
-    \draw[xread] (smemR) -- (tcL);
-    \draw[xread] (smemL) -- (tcR);
+    % highlight boxes over the Tensor-Core block (fx,fy fractional from top-left) and Shared-Memory bar of each SM
+    \node[hl, minimum width=0.92cm, minimum height=0.74cm] (tcL)   at ($($(smL.north west)!0.835!(smL.north east)$)!0.35!($(smL.south west)!0.835!(smL.south east)$)$) {};
+    \node[hl, minimum width=0.92cm, minimum height=0.74cm] (tcR)   at ($($(smR.north west)!0.335!(smR.north east)$)!0.35!($(smR.south west)!0.335!(smR.south east)$)$) {};
+    \node[hl, minimum width=2.9cm,  minimum height=0.30cm] (smemL) at ($($(smL.north west)!0.5!(smL.north east)$)!0.918!($(smL.south west)!0.5!(smL.south east)$)$) {};
+    \node[hl, minimum width=2.9cm,  minimum height=0.30cm] (smemR) at ($($(smR.north west)!0.5!(smR.north east)$)!0.918!($(smR.south west)!0.5!(smR.south east)$)$) {};
+    % cross-SM reads: each SM's tensor cores read the NEIGHBOUR's shared memory (box to box)
+    \draw[white, line width=3.4pt] (smemR.north west) -- (tcL.south);
+    \draw[white, line width=3.4pt] (smemL.north east) -- (tcR.south);
+    \draw[xread] (smemR.north west) -- (tcL.south);
+    \draw[xread] (smemL.north east) -- (tcR.south);
+    % labels (drawn last, on top)
+    \node[hllab] at (tcL)   {Tensor Core};
+    \node[hllab] at (tcR)   {Tensor Core};
+    \node[hllab] at (smemL) {Shared Memory};
+    \node[hllab] at (smemR) {Shared Memory};
   \end{tikzpicture}
   \end{center}
 
