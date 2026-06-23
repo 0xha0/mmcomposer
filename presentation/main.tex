@@ -122,25 +122,25 @@
     \foreach \c in {0,...,11}{\foreach \r in {0,...,9}{
       \ifnum\c=6 \ifnum\r=5 \fill[orange!45] (\c*0.2,\r*0.2) rectangle ++(0.2,0.2);\fi\fi
       \draw[cell] (\c*0.2,\r*0.2) rectangle ++(0.2,0.2);}}
-    % A grid (4 cols x 10 rows) at left; highlight row r=5
-    \foreach \k in {0,...,3}{\foreach \r in {0,...,9}{
-      \ifnum\r=5 \fill[blue!22] (-1.1+\k*0.2,\r*0.2) rectangle ++(0.2,0.2);\fi
-      \draw[cell] (-1.1+\k*0.2,\r*0.2) rectangle ++(0.2,0.2);}}
-    % B grid (12 cols x 4 rows) on top; highlight col c=6
-    \foreach \c in {0,...,11}{\foreach \k in {0,...,3}{
+    % A grid (8 cols x 10 rows) at left; highlight row r=5  (large K)
+    \foreach \k in {0,...,7}{\foreach \r in {0,...,9}{
+      \ifnum\r=5 \fill[blue!22] (-1.9+\k*0.2,\r*0.2) rectangle ++(0.2,0.2);\fi
+      \draw[cell] (-1.9+\k*0.2,\r*0.2) rectangle ++(0.2,0.2);}}
+    % B grid (12 cols x 8 rows) on top; highlight col c=6  (large K)
+    \foreach \c in {0,...,11}{\foreach \k in {0,...,7}{
       \ifnum\c=6 \fill[blue!22] (\c*0.2,2.3+\k*0.2) rectangle ++(0.2,0.2);\fi
       \draw[cell] (\c*0.2,2.3+\k*0.2) rectangle ++(0.2,0.2);}}
-    \node[lab] at (-0.7,-0.40) {$A$};
+    \node[lab] at (-1.1,-0.40) {$A$};
     \node[lab] at (1.2,-0.40)  {$C$};
-    \node[lab] at (1.2,3.40)   {$B$};
+    \node[lab] at (1.2,4.20)   {$B$};
   \end{tikzpicture}
   \end{center}
 
-  \vspace{0.1cm}
+  \vspace{0.02cm}
   {\footnotesize\color{mmgray}\centering orange: one output element (one thread)
    \qquad blue: the $A$ row $+$ $B$ column it reads\par}
 
-  \vspace{0.2cm}
+  \vspace{0.08cm}
   \textbf{Naive:} each thread streams a full \textbf{row of $A$} and
   \textbf{column of $B$} straight from \textbf{HBM}, and neighbours re-read the
   same rows and columns. \textbf{No reuse} $\Rightarrow \sim\! 2MNK$ reads
