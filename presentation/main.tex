@@ -880,8 +880,10 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
   \begin{columns}[T,onlytextwidth]
     \column{0.52\textwidth}
     \begin{itemize}
-      \item Each CTA loads its $BM \times BK$ slice of A.
-      \item Each CTA loads a $BK \times BN/2$ slice of B.
+      \item Each CTA loads its $BM \times BK$ slice of A and a $BK \times BN/2$
+        slice of B --- but \textbf{computes a full $BM \times BN$ band}: CTA 0 the
+        top $BM$ rows, CTA 1 the bottom. The MMA reads \emph{both} B halves
+        (cluster-shared), so loading is split while compute spans all of B.
       \item At $BN{=}256$, per-CTA SMEM per slot drops from \textbf{48\,KB} to \textbf{32\,KB}.
       \item TMA loads use \code{.cta\_group::2}; the \code{tcgen05.commit}
         multicasts the completion signal to both CTAs.
@@ -897,24 +899,31 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
         ]
         % Fixed-coordinate geometry:
         % A width = B height = BK, and B total width = output width = BN.
-        \draw[thick, fill=blue!10]  (0,0) rectangle (0.85,1.60);
-        \draw[thick, fill=green!12] (1.10,0) rectangle (3.50,1.60);
+        % A: split by rows -- CTA 0 owns the top BM, CTA 1 the bottom BM
+        \draw[thick, fill=blue!8]  (0,0.80) rectangle (0.85,1.60);
+        \draw[thick, fill=blue!20] (0,0)    rectangle (0.85,0.80);
+        % output C: same row split -- CTA 0 computes the top band, CTA 1 the bottom
+        \draw[thick, fill=green!8]  (1.10,0.80) rectangle (3.50,1.60);
+        \draw[thick, fill=green!20] (1.10,0)    rectangle (3.50,0.80);
+        % B: split by columns -- each CTA loads half (both halves used in compute)
         \draw[thick, fill=teal!12]  (1.10,1.85) rectangle (2.30,2.70);
         \draw[thick, fill=teal!20]  (2.30,1.85) rectangle (3.50,2.70);
 
-        \node[lab] at (0.425,0.80) {A};
-        \node[lab] at (2.30,0.80) {output};
+        \node[bhlab] at (0.425,1.20) {A\\CTA 0};
+        \node[bhlab] at (0.425,0.40) {A\\CTA 1};
+        \node[lab]   at (2.30,1.20) {$C$ (CTA 0)};
+        \node[lab]   at (2.30,0.40) {$C$ (CTA 1)};
         \node[bhlab] at (1.70,2.275) {B\\CTA 0};
         \node[bhlab] at (2.90,2.275) {B\\CTA 1};
 
         \draw[dim] (0,-0.16) -- (0.85,-0.16)
             node[midway, below, dimlab] {$BK$};
-        \draw[dim] (-0.16,0) -- (-0.16,1.60)
-            node[midway, left, dimlab] {$2BM$};
+        \draw[dim] (-0.16,0.80) -- (-0.16,1.60) node[midway, left, dimlab] {$BM$};
+        \draw[dim] (-0.16,0)    -- (-0.16,0.80) node[midway, left, dimlab] {$BM$};
         \draw[dim] (1.10,-0.16) -- (3.50,-0.16)
             node[midway, below, dimlab] {$BN$};
-        \draw[dim] (3.66,0) -- (3.66,1.60)
-            node[midway, right, dimlab] {$2BM$};
+        \draw[dim] (3.66,0.80) -- (3.66,1.60) node[midway, right, dimlab] {$BM$};
+        \draw[dim] (3.66,0)    -- (3.66,0.80) node[midway, right, dimlab] {$BM$};
         \draw[dim] (1.10,2.86) -- (3.50,2.86)
             node[midway, above, dimlab] {$BN$};
         \draw[dim] (3.66,1.85) -- (3.66,2.70)
