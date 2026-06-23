@@ -473,7 +473,14 @@
     \node[eng, minimum width=2.3cm, alt=<3->{fill=orange!14}{off}] (cuda) at (3.9,-1.7) {CUDA cores\\{\scriptsize (epilogue)}};
     \draw[fl] ([yshift=4pt]hbm.east) -- node[above,font=\tiny]{load} ([yshift=4pt]tma.west);
     \only<1>{
-      \draw[fl] (tma.north) to[out=90,in=190] node[flab,pos=0.8]{fill} (c0.west);
+      \draw[fl] (tma.north) to[out=90,in=190] node[flab,pos=0.85]{fill} (c0.west);
+      % the tile in flight: A (M x K, narrow) + B (K x N, wide) -- inputs, no output
+      \begin{scope}[shift={(-4.95,0.80)}]
+        \draw[fill=blue!28, thin] (0,0)    rectangle (0.16,0.34);
+        \draw[fill=blue!28, thin] (0,0.38) rectangle (0.66,0.54);
+        \node[font=\tiny, text=mmblue, inner sep=0.5pt, anchor=east]  at (-0.04,0.17) {A};
+        \node[font=\tiny, text=mmblue, inner sep=0.5pt, anchor=south] at (0.33,0.55) {B};
+      \end{scope}
     }
     \only<2>{
       \draw[fl] (tma.north) to[out=88,in=205] node[flab,pos=0.85]{fill} (c1.south west);
