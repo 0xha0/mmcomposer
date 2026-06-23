@@ -1370,7 +1370,8 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
       \toprule
       Parameter (covered in this talk) & Candidate values \\
       \midrule
-      $BM$ (tile rows)               & $\{128\}$ \\
+      $BM$ (tile rows)               & $\{128\}$ (fixed) \\
+      $BK$ (tile depth)              & $\{64\}$ (fixed) \\
       $BN$ (tile cols)               & $\{256,\ 512\}$ \\
       compute slots ($NS$)           & $\{2,3,4,5,6\}$ \\
       epilogue slots (store buffers) & $\{1,2,3,4\}$ \\
@@ -1495,28 +1496,18 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   same SMEM partition as the square case --- autotuned per shape.}
 \end{frame}
 
-\begin{frame}{Why More Buffers Doesn't Always Help}
-  The autotuned configs rarely max out the buffer counts (store mostly 1--2, not
-  4) --- something we would not have predicted before seeing the numbers. Some
-  intuition (\emph{hypotheses}, not proven):
-
-  \vspace{0.25cm}
-  \textbf{Compute ring (more $NS$)}
+\begin{frame}{Future Work}
+  \vspace{0.3cm}
   \begin{itemize}
-    \item Once the pipeline hides load/MMA latency, extra stages add nothing.
+    \setlength{\itemsep}{0.5cm}
+    \item \textbf{Port the design to Hopper} (SM90) and measure --- see how much
+      of the warp-specialized, pipelining-first structure carries over, and where
+      the performance lands.
+    \item \textbf{A DSL for custom epilogue fusions} --- express bias, activation,
+      gating, quantization, \ldots\ as a small per-chunk hook, while the framework
+      supplies the hard parts (TMEM drain, XOR swizzle, staged TMA store,
+      pipelining).
   \end{itemize}
-
-  \vspace{0.15cm}
-  \textbf{Epilogue ring (more store buffers)}
-  \begin{itemize}
-    \item If the epilogue is already fast relative to compute, the extra
-      store$\leftrightarrow$write overlap buys little.
-    \item More TMA stores in flight $=$ more memory parallelism that may contend
-      with the TMA \emph{loads} feeding the compute pipeline.
-  \end{itemize}
-
-  \vspace{0.2cm}
-  \centering\small The optimum is shape-dependent and empirical --- hence autotune.
 \end{frame}
 
 \begin{frame}{Acknowledgements}
@@ -1718,6 +1709,30 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \vspace{0.1cm}
   \footnotesize These are exactly the \code{mbarrier} calls in the warp-code
   slides --- the concrete form of the dashed ready/free arrows.
+\end{frame}
+
+\begin{frame}{Why More Buffers Doesn't Always Help}
+  The autotuned configs rarely max out the buffer counts (store mostly 1--2, not
+  4) --- something we would not have predicted before seeing the numbers. Some
+  intuition (\emph{hypotheses}, not proven):
+
+  \vspace{0.25cm}
+  \textbf{Compute ring (more $NS$)}
+  \begin{itemize}
+    \item Once the pipeline hides load/MMA latency, extra stages add nothing.
+  \end{itemize}
+
+  \vspace{0.15cm}
+  \textbf{Epilogue ring (more store buffers)}
+  \begin{itemize}
+    \item If the epilogue is already fast relative to compute, the extra
+      store$\leftrightarrow$write overlap buys little.
+    \item More TMA stores in flight $=$ more memory parallelism that may contend
+      with the TMA \emph{loads} feeding the compute pipeline.
+  \end{itemize}
+
+  \vspace{0.2cm}
+  \centering\small The optimum is shape-dependent and empirical --- hence autotune.
 \end{frame}
 
 \section{Adding a Custom Epilogue Fusion}
