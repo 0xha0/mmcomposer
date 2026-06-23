@@ -333,7 +333,7 @@
       \draw[flow] ([xshift=-4pt]hbm.north) -- ([xshift=-4pt]tma.south);
       \draw[flow] ([yshift=5pt]tma.east) -- ([yshift=5pt]smem.west);
       \draw[flow] (smem.north east) to[out=45,in=180] (tc.west);
-      \draw[flow] (tc.south) -- (cuda.north);
+      \draw[flow] (tc.south) -- node[steplab] {drain} (cuda.north);
       \draw[flow] (cuda.west) to[out=180,in=-55] (smem.south east);
       % store back
       \draw[sflow] ([yshift=-6pt]smem.west) -- ([yshift=-6pt]tma.east);
@@ -341,7 +341,7 @@
 
       \node[steplab] at (-3.55,1.78) {load};
       \node[steplab] at (1.2,2.0)    {MMA};
-      \node[steplab] at (1.2,0.5)    {drain \& stage};
+      \node[steplab] at (1.2,0.5)    {stage};
       \node[sstep]   at (-3.55,0.82) {store};
     \end{tikzpicture}
   \end{center}
