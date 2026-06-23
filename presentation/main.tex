@@ -10,7 +10,7 @@
 \usepackage{listings}
 \usepackage{minted}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,shapes.geometric,overlay-beamer-styles}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,overlay-beamer-styles,calc}
 
 \definecolor{mmblue}{RGB}{20,82,143}
 \definecolor{mmteal}{RGB}{14,116,144}
@@ -830,43 +830,37 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
 \sectionslide{toc:cta2}{2-CTA MMA: Unlock More Buffers}
 
 \begin{frame}{2-CTA MMA: Why the Hardware Allows It}
-  Two CTAs form a \textbf{cluster} on two neighbouring SMs. Blackwell's
-  \textbf{distributed shared memory} lets each SM's tensor core read \emph{both}
-  SMEMs --- so one \code{cta\_group::2} MMA consumes the full $B$ even though each
-  SM holds only half.
+  Blackwell's \textbf{distributed shared memory} lets each SM's tensor cores read
+  the \emph{neighbour's} SMEM --- so one \code{cta\_group::2} MMA spans the CTA
+  pair and consumes the full $B$.
 
-  \vspace{0.35cm}
+  \vspace{0.1cm}
   \begin{center}
-  \begin{tikzpicture}[font=\small,
-      smbox/.style={draw=mmgray, very thick, dashed, rounded corners=5pt},
-      eng/.style={ellipse, draw, thick, fill=green!14, align=center, minimum width=2.1cm, minimum height=0.95cm, font=\scriptsize},
-      mem/.style={draw, thick, rounded corners=2pt, align=center, minimum width=1.7cm, minimum height=0.8cm, font=\scriptsize},
-      a0/.style={-{Latex[length=2.2mm]}, very thick, draw=violet!70!black},
-      a1/.style={-{Latex[length=2.2mm]}, very thick, draw=orange!85!black}]
-    % --- SM 0 (CTA 0, violet) ---
-    \draw[smbox] (-5.8,-1.7) rectangle (-0.5,2.0);
-    \node[font=\scriptsize\bfseries, text=mmgray, anchor=north west] at (-5.72,1.93) {SM 0};
-    \node[eng] (mma0)  at (-3.15,1.1)   {MMA engine\\{\scriptsize(tensor core)}};
-    \node[mem, fill=violet!35] (smem0) at (-3.15,-0.85) {SMEM};
-    % --- SM 1 (CTA 1, orange) ---
-    \draw[smbox] (0.5,-1.7) rectangle (5.8,2.0);
-    \node[font=\scriptsize\bfseries, text=mmgray, anchor=north east] at (5.72,1.93) {SM 1};
-    \node[eng] (mma1)  at (3.15,1.1)   {MMA engine\\{\scriptsize(tensor core)}};
-    \node[mem, fill=orange!28] (smem1) at (3.15,-0.85) {SMEM};
-    % local reads (straight, vertical)
-    \draw[a0] (smem0) -- (mma0);
-    \draw[a1] (smem1) -- (mma1);
-    % cross-SM reads -- each tensor core also reads the neighbour's SMEM (cluster DSMEM)
-    \draw[a1] (smem1) -- (mma0);
-    \draw[a0] (smem0) -- (mma1);
+  \begin{tikzpicture}[font=\scriptsize,
+      xread/.style={-{Latex[length=2.4mm]}, line width=1.3pt, draw=orange!85!black}]
+    \node[inner sep=0] (smL) at (0,0)   {\includegraphics[width=3.2cm]{images/b200_arch.png}};
+    \node[inner sep=0] (smR) at (4.3,0) {\includegraphics[width=3.2cm]{images/b200_arch.png}};
+    \node[font=\scriptsize\bfseries, text=mmblue, anchor=south, inner sep=1pt] at (smL.north) {SM 0};
+    \node[font=\scriptsize\bfseries, text=mmblue, anchor=south, inner sep=1pt] at (smR.north) {SM 1};
+    % fractional anchor points inside each image (fx from left edge, fy from top edge)
+    % left SM tensor cores (right-hand block) / right SM tensor cores (left-hand block)
+    \coordinate (tcL) at ($($(smL.north west)!0.83!(smL.north east)$)!0.37!($(smL.south west)!0.83!(smL.south east)$)$);
+    \coordinate (tcR) at ($($(smR.north west)!0.33!(smR.north east)$)!0.37!($(smR.south west)!0.33!(smR.south east)$)$);
+    % shared-memory bar of each SM (blue bar near the bottom)
+    \coordinate (smemL) at ($($(smL.north west)!0.66!(smL.north east)$)!0.925!($(smL.south west)!0.66!(smL.south east)$)$);
+    \coordinate (smemR) at ($($(smR.north west)!0.34!(smR.north east)$)!0.925!($(smR.south west)!0.34!(smR.south east)$)$);
+    % cross-SM reads: each SM's tensor cores read the NEIGHBOUR's shared memory
+    \draw[white, line width=3.4pt] (smemR) -- (tcL);
+    \draw[white, line width=3.4pt] (smemL) -- (tcR);
+    \draw[xread] (smemR) -- (tcL);
+    \draw[xread] (smemL) -- (tcR);
   \end{tikzpicture}
   \end{center}
 
-  \vspace{0.15cm}
+  \vspace{0.05cm}
   \begin{center}{\footnotesize\color{mmgray}%
-    \tikz[baseline=-0.5ex]\node[draw=black,thin,fill=violet!35,minimum size=1.6ex,inner sep=0pt]{};~SM 0 SMEM (CTA 0)\qquad
-    \tikz[baseline=-0.5ex]\node[draw=black,thin,fill=orange!28,minimum size=1.6ex,inner sep=0pt]{};~SM 1 SMEM (CTA 1)\\[0.12cm]
-    each tensor core reads \textbf{both} --- its own (straight) and the neighbour's (crossing, cluster DSMEM)}\end{center}
+    \tikz[baseline=-0.5ex]\draw[-{Latex[length=1.6mm]},line width=1.3pt,draw=orange!85!black](0,0)--(0.5,0);~each SM's \textbf{tensor cores} read the \textbf{neighbour's} shared memory (cluster DSMEM)\\[0.08cm]
+    {\scriptsize the SM's 4 sub-partitions issue as \emph{one} \code{tcgen05} MMA ($M{=}128$); 2-CTA spans the pair ($M{=}256$)}}\end{center}
 \end{frame}
 
 \begin{frame}{2-CTA MMA: Geometry}
