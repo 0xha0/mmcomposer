@@ -67,7 +67,7 @@
   \begin{itemize}
     \item \hyperlink{toc:bg}{GEMM and B200 background}
     \item \hyperlink{toc:pipe}{Pipelining: overlap and synchronization}
-    \item \hyperlink{toc:cta2}{2-CTA MMA}
+    \item \hyperlink{toc:cta2}{2-CTA MMA: unlock more buffers}
     \item \hyperlink{toc:epi}{Designing the epilogue}
     \item \hyperlink{toc:tiles}{Shared memory partitioning}
     \item \hyperlink{toc:impl}{Implementation and performance results}
@@ -838,7 +838,7 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
 \end{frame}
 
 \section{2-CTA MMA}
-\sectionslide{toc:cta2}{2-CTA MMA}
+\sectionslide{toc:cta2}{2-CTA MMA: Unlock More Buffers}
 
 \begin{frame}{One Key Optimization: 2-CTA MMA}
   \begin{columns}[T,onlytextwidth]
@@ -968,53 +968,6 @@ else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {   // epilogue warps
   {\footnotesize A tile is 16\,KB throughout. With the SMEM capacity
   ($\approx$227\,KB), stages $= \lfloor\text{SMEM}/\text{slot}\rfloor$. 2-CTA fits
   $\sim$2$\times$ the stages.}
-\end{frame}
-
-\begin{frame}{Tradeoff of Double TMEM Buffering}
-  \small
-  \begin{center}
-    Tile width trades off \textbf{overlap} against \textbf{arithmetic intensity}.
-    \[
-      \text{2-CTA MMA, } BM{=}128:\quad \text{AI} = \frac{256BN}{256 + BN}
-    \]
-  \end{center}
-
-  \vspace{-0.25cm}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.47\textwidth}
-    \begin{center}
-      \begin{tikzpicture}[
-          box/.style={draw, thick, rounded corners=1pt, minimum width=4.55cm, minimum height=2.85cm, align=center}
-        ]
-        \node[box, fill=teal!10] {
-          \textbf{$BN{=}256$}\\[0.16cm]
-          \textbf{MORE OVERLAP}\\[0.14cm]
-          double TMEM buffer\\[0.1cm]
-          up to 7 compute stages\\[0.1cm]
-          lower AI: 128 flop/B
-        };
-      \end{tikzpicture}
-    \end{center}
-
-    \column{0.47\textwidth}
-    \begin{center}
-      \begin{tikzpicture}[
-          box/.style={draw, thick, rounded corners=1pt, minimum width=4.55cm, minimum height=2.85cm, align=center}
-        ]
-        \node[box, fill=orange!12] {
-          \textbf{$BN{=}512$}\\[0.16cm]
-          \textbf{HIGHER AI}\\[0.14cm]
-          single TMEM buffer\\[0.1cm]
-          up to 4 compute stages\\[0.1cm]
-          delayed reuse: 171 flop/B
-        };
-      \end{tikzpicture}
-    \end{center}
-  \end{columns}
-
-  \vspace{0.28cm}
-  \centering
-  \small For medium-to-large square GEMMs, higher AI often wins.
 \end{frame}
 
 \section{Epilogue Design}
@@ -1636,6 +1589,96 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \vspace{0.15cm}
   \small \textbf{Typical use:} signal that data is \emph{ready to consume}, or
   that a buffer is \emph{free to reuse}.
+\end{frame}
+
+\begin{frame}{Tradeoff of Double TMEM Buffering}
+  \small
+  \begin{center}
+    Tile width trades off \textbf{overlap} against \textbf{arithmetic intensity}.
+    \[
+      \text{2-CTA MMA, } BM{=}128:\quad \text{AI} = \frac{256BN}{256 + BN}
+    \]
+  \end{center}
+
+  \vspace{-0.25cm}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.47\textwidth}
+    \begin{center}
+      \begin{tikzpicture}[
+          box/.style={draw, thick, rounded corners=1pt, minimum width=4.55cm, minimum height=2.85cm, align=center}
+        ]
+        \node[box, fill=teal!10] {
+          \textbf{$BN{=}256$}\\[0.16cm]
+          \textbf{MORE OVERLAP}\\[0.14cm]
+          double TMEM buffer\\[0.1cm]
+          up to 7 compute stages\\[0.1cm]
+          lower AI: 128 flop/B
+        };
+      \end{tikzpicture}
+    \end{center}
+
+    \column{0.47\textwidth}
+    \begin{center}
+      \begin{tikzpicture}[
+          box/.style={draw, thick, rounded corners=1pt, minimum width=4.55cm, minimum height=2.85cm, align=center}
+        ]
+        \node[box, fill=orange!12] {
+          \textbf{$BN{=}512$}\\[0.16cm]
+          \textbf{HIGHER AI}\\[0.14cm]
+          single TMEM buffer\\[0.1cm]
+          up to 4 compute stages\\[0.1cm]
+          delayed reuse: 171 flop/B
+        };
+      \end{tikzpicture}
+    \end{center}
+  \end{columns}
+
+  \vspace{0.28cm}
+  \centering
+  \small For medium-to-large square GEMMs, higher AI often wins.
+\end{frame}
+
+\begin{frame}{CTA Swizzle: L2 Reuse}
+  \begin{center}{\large \textbf{Reorder CTA launch so a concurrent wave covers a compact block}}\end{center}
+  \vspace{0.25cm}
+  \begin{center}
+  \begin{tikzpicture}[font=\scriptsize,
+      cell/.style={draw=black!30, thin},
+      dim/.style={Stealth-Stealth, thin, draw=mmblue},
+      dimlab/.style={font=\tiny, text=mmblue},
+      gl/.style={font=\scriptsize\bfseries}]
+    % Left: row-major -- a wave is one wide strip (1 A-row, all 8 B-cols)
+    \begin{scope}
+      \foreach \c in {0,...,7} { \foreach \r in {0,...,3} {
+        \ifnum\r=3\relax \fill[orange!40] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+        \else \fill[gray!5] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);\fi
+        \draw[cell] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+      }}
+      \draw[dim] (0,1.82) -- (3.36,1.82) node[midway,above,dimlab]{8 B-cols};
+      \draw[dim] (-0.18,1.26) -- (-0.18,1.68) node[midway,left,dimlab,align=right]{1\\A-row};
+      \node[gl] at (1.68,-0.45) {row-major};
+      \node at (1.68,-0.95) {wave loads $1{+}8 = \mathbf{9}$ tiles};
+    \end{scope}
+    % Right: swizzled (width 2) -- a wave is a compact block (4 A-rows, 2 B-cols)
+    \begin{scope}[xshift=5.4cm]
+      \foreach \c in {0,...,7} { \foreach \r in {0,...,3} {
+        \ifnum\c<2\relax \fill[orange!40] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+        \else \fill[gray!5] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);\fi
+        \draw[cell] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+      }}
+      \draw[dim] (0,1.82) -- (0.84,1.82) node[midway,above,dimlab]{2 B-cols};
+      \draw[dim] (-0.18,0) -- (-0.18,1.68) node[midway,left,dimlab,align=right]{4\\A-rows};
+      \node[gl] at (1.68,-0.45) {swizzled (width 2)};
+      \node at (1.68,-0.95) {wave loads $4{+}2 = \mathbf{6}$ tiles};
+    \end{scope}
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.55cm}
+  \begin{center}
+  {\small A \textbf{wave} = the CTAs running at once ($\sim$\#SMs). A compact wave
+  fetches fewer A/B tiles for the same outputs --- so they stay \textbf{hot in L2}
+  and HBM traffic drops. (Swizzle factor is autotuned: $\{1,2,4,8,16\}$.)}
+  \end{center}
 \end{frame}
 
 \begin{frame}{Implementation: TMA Loading}
