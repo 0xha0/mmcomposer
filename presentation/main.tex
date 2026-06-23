@@ -1427,9 +1427,8 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \begin{itemize}
     \item A \textbf{static checker} prunes combos whose SMEM exceeds
       \textbf{227\,KB}.
-    \item The framework fixes everything else; the one knob it leaves open is the
-      \textbf{CTA-swizzle factor} $\{1,2,4,8,16\}$ (an L2-reuse block ordering,
-      not covered here).
+    \item The \textbf{CTA-swizzle factor} $\{1,2,4,8,16\}$ is also autotuned
+      (an L2-reuse block ordering; see backup).
   \end{itemize}
 \end{frame}
 
