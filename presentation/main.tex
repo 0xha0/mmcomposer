@@ -1369,6 +1369,49 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   fewer/larger compute slots trade for more store buffers.}
 \end{frame}
 
+\begin{frame}{CTA Swizzle: L2 Reuse}
+  \begin{center}{\large \textbf{Reorder CTA launch so a concurrent wave covers a compact block}}\end{center}
+  \vspace{0.25cm}
+  \begin{center}
+  \begin{tikzpicture}[font=\scriptsize,
+      cell/.style={draw=black!30, thin},
+      dim/.style={Stealth-Stealth, thin, draw=mmblue},
+      dimlab/.style={font=\tiny, text=mmblue},
+      gl/.style={font=\scriptsize\bfseries}]
+    % Left: row-major -- a wave is one wide strip (1 A-row, all 8 B-cols)
+    \begin{scope}
+      \foreach \c in {0,...,7} { \foreach \r in {0,...,3} {
+        \ifnum\r=3\relax \fill[orange!40] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+        \else \fill[gray!5] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);\fi
+        \draw[cell] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+      }}
+      \draw[dim] (0,1.82) -- (3.36,1.82) node[midway,above,dimlab]{8 B-cols};
+      \draw[dim] (-0.18,1.26) -- (-0.18,1.68) node[midway,left,dimlab,align=right]{1\\A-row};
+      \node[gl] at (1.68,-0.45) {row-major};
+      \node at (1.68,-0.95) {wave loads $1{+}8 = \mathbf{9}$ tiles};
+    \end{scope}
+    % Right: swizzled (width 2) -- a wave is a compact block (4 A-rows, 2 B-cols)
+    \begin{scope}[xshift=5.4cm]
+      \foreach \c in {0,...,7} { \foreach \r in {0,...,3} {
+        \ifnum\c<2\relax \fill[orange!40] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+        \else \fill[gray!5] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);\fi
+        \draw[cell] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
+      }}
+      \draw[dim] (0,1.82) -- (0.84,1.82) node[midway,above,dimlab]{2 B-cols};
+      \draw[dim] (-0.18,0) -- (-0.18,1.68) node[midway,left,dimlab,align=right]{4\\A-rows};
+      \node[gl] at (1.68,-0.45) {swizzled (width 2)};
+      \node at (1.68,-0.95) {wave loads $4{+}2 = \mathbf{6}$ tiles};
+    \end{scope}
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.55cm}
+  \begin{center}
+  {\small A \textbf{wave} = the CTAs running at once ($\sim$\#SMs). A compact wave
+  fetches fewer A/B tiles for the same outputs --- so they stay \textbf{hot in L2}
+  and HBM traffic drops. (Swizzle factor is autotuned: $\{1,2,4,8,16\}$.)}
+  \end{center}
+\end{frame}
+
 \section{Implementation and Performance}
 \sectionslide{toc:impl}{Implementation and Performance}
 
@@ -1428,7 +1471,7 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
     \item A \textbf{static checker} prunes combos whose SMEM exceeds
       \textbf{227\,KB}.
     \item The \textbf{CTA-swizzle factor} $\{1,2,4,8,16\}$ is also autotuned
-      (an L2-reuse block ordering; see backup).
+      (the L2-reuse ordering shown just before).
   \end{itemize}
 \end{frame}
 
@@ -1607,49 +1650,6 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   \vspace{0.28cm}
   \centering
   \small For medium-to-large square GEMMs, higher AI often wins.
-\end{frame}
-
-\begin{frame}{CTA Swizzle: L2 Reuse}
-  \begin{center}{\large \textbf{Reorder CTA launch so a concurrent wave covers a compact block}}\end{center}
-  \vspace{0.25cm}
-  \begin{center}
-  \begin{tikzpicture}[font=\scriptsize,
-      cell/.style={draw=black!30, thin},
-      dim/.style={Stealth-Stealth, thin, draw=mmblue},
-      dimlab/.style={font=\tiny, text=mmblue},
-      gl/.style={font=\scriptsize\bfseries}]
-    % Left: row-major -- a wave is one wide strip (1 A-row, all 8 B-cols)
-    \begin{scope}
-      \foreach \c in {0,...,7} { \foreach \r in {0,...,3} {
-        \ifnum\r=3\relax \fill[orange!40] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
-        \else \fill[gray!5] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);\fi
-        \draw[cell] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
-      }}
-      \draw[dim] (0,1.82) -- (3.36,1.82) node[midway,above,dimlab]{8 B-cols};
-      \draw[dim] (-0.18,1.26) -- (-0.18,1.68) node[midway,left,dimlab,align=right]{1\\A-row};
-      \node[gl] at (1.68,-0.45) {row-major};
-      \node at (1.68,-0.95) {wave loads $1{+}8 = \mathbf{9}$ tiles};
-    \end{scope}
-    % Right: swizzled (width 2) -- a wave is a compact block (4 A-rows, 2 B-cols)
-    \begin{scope}[xshift=5.4cm]
-      \foreach \c in {0,...,7} { \foreach \r in {0,...,3} {
-        \ifnum\c<2\relax \fill[orange!40] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
-        \else \fill[gray!5] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);\fi
-        \draw[cell] ({\c*0.42},{\r*0.42}) rectangle ++(0.42,0.42);
-      }}
-      \draw[dim] (0,1.82) -- (0.84,1.82) node[midway,above,dimlab]{2 B-cols};
-      \draw[dim] (-0.18,0) -- (-0.18,1.68) node[midway,left,dimlab,align=right]{4\\A-rows};
-      \node[gl] at (1.68,-0.45) {swizzled (width 2)};
-      \node at (1.68,-0.95) {wave loads $4{+}2 = \mathbf{6}$ tiles};
-    \end{scope}
-  \end{tikzpicture}
-  \end{center}
-  \vspace{0.55cm}
-  \begin{center}
-  {\small A \textbf{wave} = the CTAs running at once ($\sim$\#SMs). A compact wave
-  fetches fewer A/B tiles for the same outputs --- so they stay \textbf{hot in L2}
-  and HBM traffic drops. (Swizzle factor is autotuned: $\{1,2,4,8,16\}$.)}
-  \end{center}
 \end{frame}
 
 \begin{frame}{Implementation: TMA Loading}
