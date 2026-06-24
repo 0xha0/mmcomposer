@@ -488,17 +488,17 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         }
                         tcgen05_wait_ld();
 
-                        // The TMEM->reg load above doesn't touch the store buffer, so wait for a
-                        // free store slot only now -- letting the load overlap the in-flight TMA
-                        // store. Stays before the bar.sync below so all warps respect the wait.
-                        if (ew == 0)
-                            tma_wait_group<TMA_STORE_STAGES - 1>();
-
+                        // The TMEM->reg load above doesn't touch the store buffer, so the
+                        // free-store-slot wait below is deferred to just before the buffer write
+                        // (and stays before the bar.sync so every warp observes the ew==0 wait).
                         if (chunk == NUM_CHUNKS - 1) {
                             tcgen05_fence_before_thread_sync();
                             if (ew == 0 && elect_sync())
                                 signal_sync(buf);
                         }
+
+                        if (ew == 0)
+                            tma_wait_group<TMA_STORE_STAGES - 1>();
 
                         asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
 
