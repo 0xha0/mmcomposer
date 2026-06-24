@@ -145,8 +145,8 @@ def main() -> int:
                     help="production (default): warp-spec-on, BN=256/512, NS>=3; full: timed all-combo sweep")
     ap.add_argument("--top", type=int, default=10, help="how many top configs to print (default 10)")
     ap.add_argument("--timeout", type=int, default=3600, help="sweep timeout in seconds (default 3600)")
-    ap.add_argument("--live-interval", type=float, default=30.0,
-                    help="seconds between live leaderboard updates (default 30)")
+    ap.add_argument("--live-interval", type=float, default=3.0,
+                    help="seconds between live leaderboard updates (default 3)")
     ap.add_argument("--live-redraw", choices=["auto", "always", "never"], default="auto",
                     help="update the same terminal table in place; default auto uses redraw only on a TTY")
     ap.add_argument("--warmup-ms", type=int, default=None,
