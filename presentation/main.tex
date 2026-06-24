@@ -1529,6 +1529,27 @@ for (int chunk = 0; chunk < BN/64; chunk++) {
   {\footnotesize Wide/short LLM-style shapes; $BN$ / $NS$ / store autotuned per shape.}
 \end{frame}
 
+\begin{frame}{Performance Analysis: $BN{=}512$ Prefers Large $K$}
+  \textbf{Observation.} Among the autotuned winners, large-$K$ shapes favour
+  \textbf{$BN{=}512$}; small-$K$ shapes (e.g.\ $K{=}768$) fall back to
+  \textbf{$BN{=}256$}.
+
+  \vspace{0.3cm}
+  \textbf{Why.} $BN{=}512$ has the \textbf{higher arithmetic intensity}
+  ($171$ vs.\ $128$ flop/byte), so it keeps the tensor cores busier per tile ---
+  but it holds only a \textbf{single TMEM accumulator}, so every tile pays a
+  \textbf{fixed TMEM-reuse delay}: the MMA must wait for the epilogue to drain
+  that one buffer before it can start the next tile.
+
+  \vspace{0.3cm}
+  \begin{itemize}
+    \item \textbf{Large $K$}: many K-chained MMAs per tile \emph{amortize} the
+      fixed reuse delay --- the higher AI wins.
+    \item \textbf{Small $K$}: too little compute per tile to hide the delay, so
+      $BN{=}256$'s \textbf{double-buffered} TMEM (more overlap) wins instead.
+  \end{itemize}
+\end{frame}
+
 \begin{frame}{Future Work}
   \vspace{0.3cm}
   \begin{itemize}
