@@ -192,7 +192,9 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=10, help="how many top configs to show (default 10)")
     ap.add_argument("--live-interval", type=float, default=3.0,
                     help="seconds between live leaderboard updates (default 3)")
-    ap.add_argument("--live-redraw", choices=["auto", "always", "never"], default="auto")
+    ap.add_argument("--live-redraw", choices=["auto", "always", "never"], default="always",
+                    help="redraw the leaderboard in place (default always; "
+                         "use 'never' for piped/captured output)")
     ap.add_argument("--warmup-ms", type=int, default=None, help="do_bench warmup window (ms)")
     ap.add_argument("--rep-ms", type=int, default=None, help="do_bench repetition window (ms)")
     ap.add_argument("--cublas-samples", type=int, default=3, help="measured cuBLAS samples (median)")
