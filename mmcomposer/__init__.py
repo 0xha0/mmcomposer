@@ -11,13 +11,26 @@ The whole core lives in this package -- a self-contained, modular pipeline
     enumerate (combos) -> codegen -> compile -> runtime -> benchmark -> cache
                                                           (leaderboard renders)
 
-`autotune.tune` orchestrates the sweep in-process; `mmc.matmul`/`get_tuned_kernel`
-serve the best cached kernel (auto-tuning on a cold shape).
+The leaf modules are imported eagerly; the API (matmul/get_tuned_kernel/tune) and
+the autotune orchestrator are exposed lazily via module __getattr__, so importing
+the package stays light and `python -m mmcomposer.autotune` runs without a runpy
+double-import warning.
 """
+import importlib as _importlib
+
 from . import (compiler, cache, leaderboard, mvp_core, combos,  # noqa: F401
-               runtime, benchmark, codegen, autotune)
-from .mmc import matmul, get_tuned_kernel, tune  # noqa: F401
+               runtime, benchmark, codegen)
+
+_API = {"matmul", "get_tuned_kernel", "tune"}   # defined in mmcomposer.mmc
 
 __all__ = ["matmul", "get_tuned_kernel", "tune",
            "combos", "compiler", "runtime", "benchmark",
            "cache", "leaderboard", "autotune", "mvp_core", "codegen"]
+
+
+def __getattr__(name):
+    if name in _API:
+        return getattr(_importlib.import_module(".mmc", __name__), name)
+    if name == "autotune":
+        return _importlib.import_module(".autotune", __name__)
+    raise AttributeError(f"module 'mmcomposer' has no attribute {name!r}")
