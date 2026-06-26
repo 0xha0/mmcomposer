@@ -32,7 +32,7 @@ def test_cache_shape_key_works_through_package():
 
 def test_enumerate_works_through_package():
     ws = list(dict.fromkeys(t["dir"] for k, t in
-                            __import__("mvp_core").TIER_MAP.items() if t and k[0]))
+                            mmc.mvp_core.TIER_MAP.items() if t and k[0]))
     n = sum(1 for _ in mmc.combos.valid_combos(ws, {"bn": [256], "ns": [4]}))
     assert n >= 1
 
