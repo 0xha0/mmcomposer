@@ -159,11 +159,18 @@ def kernel(config, cubin_path):
     config.  The cubin loads once per process, and the per-(shape, buffers) launch
     state is cached, so repeated calls with the same tensors are *just a launch* --
     which is what lets do_bench measure the kernel rather than host setup.  Pass
-    `c` to reuse an output buffer, else a fresh bf16 output is allocated."""
+    `c` to reuse an output buffer, else a fresh bf16 output is allocated.
+
+    The launch is **asynchronous** (like ``torch.matmul``): it enqueues on the
+    given CUDA stream and returns without a host sync.  The default stream is
+    torch's *current* stream, so the result is correctly ordered before any
+    following torch op (and a host read such as ``.item()`` / ``.cpu()`` syncs as
+    usual).  Pass ``sync=True`` to block until the kernel completes, or an explicit
+    integer ``stream`` handle (e.g. ``torch.cuda.current_stream().cuda_stream``)."""
     import torch
     state = {}   # (M,N,K, a_ptr, b_ptr, c_ptr) -> (fn, grid, block, shared, args)
 
-    def call(a, b, c=None, *, sync=True):
+    def call(a, b, c=None, *, sync=False, stream=None):
         M, Ka = a.shape
         Kb, N = b.shape
         assert Ka == Kb, f"inner dims disagree: {a.shape} @ {b.shape}"
@@ -171,6 +178,10 @@ def kernel(config, cubin_path):
             # empty, not zeros: the GEMM writes every element of C, so a memset
             # would be wasted work (~tens of us per call at large N).
             c = torch.empty(M, N, dtype=torch.bfloat16, device=a.device)
+        if stream is None:
+            # Enqueue on torch's current stream so stream ordering keeps the
+            # result safe for any following torch op on the same device.
+            stream = torch.cuda.current_stream(a.device).cuda_stream
         skey = (M, N, Ka, a.data_ptr(), b.data_ptr(), c.data_ptr())
         st = state.get(skey)
         if st is None:
@@ -178,7 +189,8 @@ def kernel(config, cubin_path):
             state[skey] = st
         rt, _ = _backends()
         fn, grid, block, shared, args = st
-        rt.launch(fn, grid=grid, block=block, shared=shared, args=args, sync=sync)
+        rt.launch(fn, grid=grid, block=block, shared=shared, args=args,
+                  stream=stream, sync=sync)
         return c
 
     return call

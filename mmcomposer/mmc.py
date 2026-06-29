@@ -148,7 +148,11 @@ def get_tuned_kernel(a, b, *, tune_if_missing=True):
     return fn
 
 
-def matmul(a, b, *, tune_if_missing=True):
+def matmul(a, b, *, out=None, sync=False, tune_if_missing=True):
     """``c = a @ b`` with the best-known MMComposer kernel for this shape
-    (auto-tunes + caches on the first call for a new shape)."""
-    return get_tuned_kernel(a, b, tune_if_missing=tune_if_missing)(a, b)
+    (auto-tunes + caches on the first call for a new shape).
+
+    Asynchronous like ``torch.matmul``: enqueues on torch's current stream and
+    returns immediately (the result is ordered before following torch ops).  Pass
+    ``out=`` to reuse an output buffer, or ``sync=True`` to block until done."""
+    return get_tuned_kernel(a, b, tune_if_missing=tune_if_missing)(a, b, out, sync=sync)
