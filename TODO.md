@@ -28,15 +28,19 @@ so per-call host cost is ~6.5 µs — on par with `torch`. The overhead only app
 when the output is freshly allocated each call, and is negligible at realistic
 shapes (kernel time ≫ host time).
 
-## Follow-ups (rough priority)
+## Done
 
-### 1. Async `matmul` on torch's stream  *(highest value)*
-`mmc.matmul` currently **blocks**: the `runtime.kernel` callable defaults to
-`sync=True` and launches on the default stream 0, unlike `torch.matmul` (async).
-Launch on `torch.cuda.current_stream().cuda_stream` and return **without**
-syncing, so stream ordering keeps the result safe for following torch ops. This
-removes a full device sync per call and matches torch semantics. Keep an opt-in
-`sync=True` / `out=`.
+### ~~1. Async `matmul` on torch's stream~~  *(done — commit `3537623`)*
+The `runtime.kernel` callable now defaults to `sync=False` and launches on
+`torch.cuda.current_stream(device).cuda_stream`, matching `torch.matmul`: the
+result is stream-ordered before any following torch op, and host reads
+(`.item()`/`.cpu()`) sync as usual. Removes a full `cuCtxSynchronize` per call
+and makes mmc capturable by CUDA graphs / `torch.compile` (a blocking sync
+can't be captured). `sync=True` and an explicit `stream=` stay opt-in;
+`mmc.matmul` gained `out=` / `sync=` passthrough. B200-verified: all paths
+correct (rel_err 1.66e-3); 50 launches return to host in 0.55 ms vs 4.66 ms GPU.
+
+## Follow-ups (rough priority)
 
 ### 2. Descriptor-cache split  *(modest; fresh-output path only)*
 Cache `(fn, grid, block, shared)` + the **A & B** descriptors keyed by
@@ -55,4 +59,8 @@ output pointer requires a re-encode. Worth little when the output buffer is reus
   can corrupt an in-process CUDA context).
 
 ## Guidance for now
-Reuse your `out=` buffer in hot loops → per-call host overhead ≈ 0.
+`matmul` is now async (no per-call sync). In steady-state training the caching
+allocator reuses the same output addresses each step, so the launch-state cache
+hits and per-call host overhead ≈ 0 even without an explicit `out=`. For the
+lowest overhead, capture the step with CUDA graphs / `torch.compile` (now that
+the launch is sync-free and capturable) or reuse an `out=` buffer in hot loops.
