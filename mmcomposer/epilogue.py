@@ -11,6 +11,9 @@ expression DAG, then *lowered* to a CUDA fp32 expression.  mmcomposer splices
 that expression into the kernel epilogue so it runs per output element, in fp32,
 right after the tensor-memory load and before the bf16 stage to SMEM/GMEM.
 
+See ``mmcomposer/EPILOGUE.md`` for the formal language definition (semantics,
+contract, grammar, builtins).
+
 Two-tier builtins:
   * primitives  -- lower 1:1 to a CUDA intrinsic: exp, tanh, sqrt, log,
     abs (via ``abs(x)``), maximum, minimum.
