@@ -34,16 +34,34 @@ def _strip_module_docstring(src: str) -> str:
 
 def generate_kernel(config: dict) -> str:
     """Return the kernel.cu specialized to `config` (a dict of knob values +
-    'skeleton')."""
+    'skeleton').  ``config['EPILOGUE_FN']`` (default ``"x"``, identity) is a CUDA
+    fp32 expression in terms of ``x`` -- the elementwise epilogue (see
+    mmcomposer/epilogue.py) applied to each output element before the bf16 store."""
     spec.validate(config)
     knobs = spec.int_knobs(config)
     src = (fragments.KERNELS_DIR / config["skeleton"] / "kernel.cu").read_text()
     src = fragments.splice(src)                              # inject shared building blocks
     src = directives.resolve(src, knobs)                     # drop dead #if branches
     src = substitute.substitute_kernel_constexprs(src, **knobs)   # set live constants
+    src = _inject_epilogue(src, config.get("EPILOGUE_FN", "x"))
     if _RESIDUAL_DIRECTIVE.search(src):
         raise RuntimeError("codegen: unresolved #if directive remained after resolve()")
     return src
+
+
+# The epilogue fragments call mmc_epi(x) around every fp32->bf16 conversion;
+# define it here from the (lowered) EDL expression.  Identity ("x") inlines to a
+# no-op, so kernels with no epilogue are unchanged.
+_DEVICE_DECL = re.compile(r'(?m)^(__device__|extern\s+"C"|template\b|__global__)')
+
+
+def _inject_epilogue(src: str, expr: str) -> str:
+    decl = ("// ---- elementwise epilogue (EDL): per-element fp32 map before bf16 store ----\n"
+            f"__device__ __forceinline__ float mmc_epi(float x) {{ return {expr}; }}\n\n")
+    m = _DEVICE_DECL.search(src)
+    if not m:
+        raise RuntimeError("codegen: no device-scope anchor to inject mmc_epi before")
+    return src[:m.start()] + decl + src[m.start():]
 
 
 def generate_host(config: dict) -> str:

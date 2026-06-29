@@ -55,7 +55,7 @@
         __nv_bfloat162 packed[LDW / 2];
         #pragma unroll
         for (int i = 0; i < LDW / 2; i++) {
-            packed[i] = __floats2bfloat162_rn(tmp[2 * i], tmp[2 * i + 1]);
+            packed[i] = __floats2bfloat162_rn(mmc_epi(tmp[2 * i]), mmc_epi(tmp[2 * i + 1]));
         }
         // SMEM stores — int4 = 16 B = 8 BF16 = 4 BF16x2, one per 8 columns.
         #pragma unroll

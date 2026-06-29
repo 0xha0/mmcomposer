@@ -73,7 +73,7 @@
                             __nv_bfloat162 pk[4];
                             #pragma unroll
                             for (int i = 0; i < 4; i++)
-                                pk[i] = __floats2bfloat162_rn(t[n][2 * i], t[n][2 * i + 1]);
+                                pk[i] = __floats2bfloat162_rn(mmc_epi(t[n][2 * i]), mmc_epi(t[n][2 * i + 1]));
                             const int local_n = col_warp * LOADS_PER_WARP + n;
                             const int swizzled_n = local_n ^ (my_row & 7);
                             __nv_bfloat16* write_ptr =
@@ -133,7 +133,7 @@
                             __nv_bfloat162 pk[LDW / 2];
                             #pragma unroll
                             for (int i = 0; i < LDW / 2; i++)
-                                pk[i] = __floats2bfloat162_rn(t[2 * i], t[2 * i + 1]);
+                                pk[i] = __floats2bfloat162_rn(mmc_epi(t[2 * i]), mmc_epi(t[2 * i + 1]));
                             #pragma unroll
                             for (int c = 0; c < LDW; c += 8)
                                 *reinterpret_cast<int4*>(&C_sh[my_row][n - split_base + c]) =
@@ -176,7 +176,7 @@
                         __nv_bfloat162 pk[LDW / 2];
                         #pragma unroll
                         for (int i = 0; i < LDW / 2; i++)
-                            pk[i] = __floats2bfloat162_rn(t[2 * i], t[2 * i + 1]);
+                            pk[i] = __floats2bfloat162_rn(mmc_epi(t[2 * i]), mmc_epi(t[2 * i + 1]));
                         #pragma unroll
                         for (int c = 0; c < LDW; c += 8)
                             *reinterpret_cast<int4*>(&C_sh[my_row][n + c]) =

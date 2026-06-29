@@ -15,23 +15,47 @@ contiguous, C row-major; M and N multiples of 256, K a multiple of 64; B200
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import pathlib
 import sys
 import time
+import weakref
 
 from . import mvp_core as mc        # noqa: F401
 from . import compiler
 from . import runtime
 from . import cache as kcache
 from . import autotune
+from . import epilogue as epi
 from . import swiglu as _swiglu
+from .codegen import generate as _codegen
 
 DEFAULT_DTYPE = "bf16"
 DEFAULT_ARCH = kcache.DEFAULT_ARCH
 
 # in-process kernel-callable cache, keyed by shape_key (avoids re-render/compile)
 _KERNELS: dict = {}
+_EPI_KERNELS: dict = {}        # (shape_key, epilogue_digest) -> callable
+# Memoize trace+lower by the epilogue callable so a *reused* epilogue object is
+# not re-traced every call (a fresh inline lambda each call still re-traces --
+# define the epilogue once and reuse it in hot loops).
+_TRACE_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _SWIGLU_DUAL_B_NS6_S2 = None   # the fixed swiglu kernel callable (lazy, shape-agnostic)
+
+
+def _trace(epilogue):
+    """Return (cuda_expr, digest) for an epilogue callable, memoized by object."""
+    td = _TRACE_CACHE.get(epilogue)
+    if td is None:
+        cuda = epi.to_cuda(epilogue)
+        tag = hashlib.sha1(cuda.encode()).hexdigest()[:10]
+        try:
+            _TRACE_CACHE[epilogue] = (cuda, tag)
+        except TypeError:                 # not weak-referenceable -> just don't cache
+            pass
+        return cuda, tag
+    return td
 
 
 # ---- input validation -----------------------------------------------------
@@ -80,6 +104,35 @@ def _build(config):
     build_root = kcache.cache_root() / "build" / DEFAULT_ARCH
     src = autotune._render(tier, config, build_root)
     cubin = compiler.compile_one(src)
+    return runtime.kernel(config, cubin)
+
+
+def _build_epilogue(config, cuda_expr):
+    """Reuse the shape's tuned geometry but splice in an elementwise epilogue:
+    render kernel.cu with EPILOGUE_FN=cuda_expr (via the codegen engine directly),
+    compile a cubin tagged by (geometry, epilogue), and bind a runtime callable.
+    The kernel symbol is unchanged, so `config` still drives the launch."""
+    tier = _tier_for(config)
+    cg = mc.knob_kwargs(
+        config["bm"], config["bn"], config["bk"], config["ns"],
+        config["gsm"], config["nw"],
+        persistent=config.get("persistent", 0), ld_width=config.get("ld_width", 8),
+        overlap=config.get("overlap", 0), split_epilogue=config.get("split_epilogue", 0),
+        l1_no_alloc=config.get("l1_no_alloc", 0), tma_pipelined=config.get("tma_pipelined", 0),
+        tma_store_stages=config.get("tma_store_stages", 2),
+        single_tmem=config.get("single_tmem", 0))
+    cg["skeleton"] = tier["dir"]
+    cg["TWO_CTA"] = int(tier["cluster"])
+    cg["EPILOGUE_FN"] = cuda_expr
+    src_text = _codegen.generate_kernel(cg)
+    # one cubin per (geometry + epilogue); cg already captures both.
+    geo = hashlib.sha1(json.dumps(cg, sort_keys=True).encode()).hexdigest()[:16]
+    d = kcache.cache_root() / "build" / DEFAULT_ARCH / f"epi_{geo}"
+    d.mkdir(parents=True, exist_ok=True)
+    src = d / "kernel.cu"
+    if not src.exists() or src.read_text() != src_text:
+        src.write_text(src_text)
+    cubin = compiler.compile_one(str(src))
     return runtime.kernel(config, cubin)
 
 
@@ -150,14 +203,56 @@ def get_tuned_kernel(a, b, *, tune_if_missing=True):
     return fn
 
 
-def matmul(a, b, *, out=None, sync=False, tune_if_missing=True):
+def get_epilogue_kernel(a, b, epilogue, *, tune_if_missing=True):
+    """Like get_tuned_kernel, but fuses an elementwise epilogue (see
+    mmcomposer/epilogue.py) onto each output element.  `epilogue` is a one-in/
+    one-out callable (lambda or def) over the epilogue DSL.  Reuses the shape's
+    tuned geometry and compiles an epilogue-specific cubin (cached by digest)."""
+    M, N, K = _validate(a, b)
+    key = kcache.shape_key(M, N, K, DEFAULT_DTYPE, DEFAULT_ARCH)
+    cuda, tag = _trace(epilogue)             # trace + lower (memoized by object)
+    ck = (key, tag)
+    if ck in _EPI_KERNELS:
+        return _EPI_KERNELS[ck]
+    rec = kcache.best(key)
+    if rec is None:
+        if not tune_if_missing:
+            raise RuntimeError(
+                f"no tuned config for {key}; run mmc.tune({M}, {N}, {K}) first "
+                f"or call with tune_if_missing=True")
+        print(f"[mmcomposer] no tuned kernel for {M}x{N}x{K} {DEFAULT_DTYPE} on "
+              f"{DEFAULT_ARCH} -- auto-tuning now (one-time per machine; cached to "
+              f"{kcache.cache_root()} and reused in future sessions)",
+              file=sys.stderr, flush=True)
+        t0 = time.monotonic()
+        summary = tune(M, N, K, on_event=_autotune_progress())
+        rec = kcache.best(key)
+        if rec is None:
+            raise RuntimeError(f"tuning produced no valid config for {key}: "
+                               f"{summary.get('error')}")
+        print(f"[mmcomposer] auto-tune complete in {time.monotonic() - t0:.0f}s: "
+              f"best {rec['tflops']:.0f} TFLOPS ({rec['vs_cublas']:.0%} of cuBLAS) -- cached.",
+              file=sys.stderr, flush=True)
+    fn = _build_epilogue(rec["config"], cuda)
+    _EPI_KERNELS[ck] = fn
+    return fn
+
+
+def matmul(a, b, *, out=None, sync=False, tune_if_missing=True, epilogue=None):
     """``c = a @ b`` with the best-known MMComposer kernel for this shape
     (auto-tunes + caches on the first call for a new shape).
 
     Asynchronous like ``torch.matmul``: enqueues on torch's current stream and
     returns immediately (the result is ordered before following torch ops).  Pass
-    ``out=`` to reuse an output buffer, or ``sync=True`` to block until done."""
-    return get_tuned_kernel(a, b, tune_if_missing=tune_if_missing)(a, b, out, sync=sync)
+    ``out=`` to reuse an output buffer, or ``sync=True`` to block until done.
+
+    Pass ``epilogue=`` (a one-in/one-out callable over the epilogue DSL, see
+    mmcomposer/epilogue.py) to fuse an elementwise op onto each output element,
+    e.g. ``mmc.matmul(a, b, epilogue=lambda x: x * sigmoid(x))`` for SiLU."""
+    if epilogue is None:
+        return get_tuned_kernel(a, b, tune_if_missing=tune_if_missing)(a, b, out, sync=sync)
+    return get_epilogue_kernel(a, b, epilogue,
+                               tune_if_missing=tune_if_missing)(a, b, out, sync=sync)
 
 
 def matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate, *, c=None, d=None, sync=False):
