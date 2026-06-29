@@ -116,20 +116,26 @@ class Cache:
 
 
 # ---- module-level default cache (local disk) ------------------------------
-_default = Cache()
+# Construct per call (cheap: just holds a path, no I/O until used) so the cache
+# root is re-resolved from $MMCOMPOSER_CACHE_DIR each time -- matching the lazy
+# resolution in autotune.tune().  Binding a singleton at import would freeze the
+# root to whatever it was when `mmcomposer.cache` was first imported, so setting
+# the env var after import would split writes (lazy) from reads (frozen).
+def _default() -> "Cache":
+    return Cache()
 
 
 def put(key, record):
-    return _default.put(key, record)
+    return _default().put(key, record)
 
 
 def get(key):
-    return _default.get(key)
+    return _default().get(key)
 
 
 def top_n(key, n):
-    return _default.top_n(key, n)
+    return _default().top_n(key, n)
 
 
 def best(key):
-    return _default.best(key)
+    return _default().best(key)
