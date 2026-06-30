@@ -64,6 +64,15 @@ def with_filter_override(filters, key, spec):
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
+def _fits(tier, k, M, N, K) -> bool:
+    """Whether a (shape-agnostic) combo's tile actually divides this shape.  The
+    tile columns BN must divide N, the per-cluster rows (2*BM for a 2-CTA cluster,
+    else BM) must divide M, and BK must divide K -- otherwise the grid/tiling is
+    wrong and the launch fails (CUDA_ERROR_LAUNCH_FAILED)."""
+    cta = 2 if tier["cluster"] else 1
+    return (M % (cta * k["bm"]) == 0) and (N % k["bn"] == 0) and (K % k["bk"] == 0)
+
+
 def _render(tier, k, build_root, epilogue=None) -> str:
     """Render kernel.cu for (tier, k) into a tagged build dir; return its path.
 
@@ -147,8 +156,13 @@ def tune(M, N, K, *, tier_dirs, filters, dtype="bf16", arch=kcache.DEFAULT_ARCH,
         if on_event:
             on_event(key=key, phase=phase, **kw)
 
-    # 1. enumerate
-    combo_list = list(combos.valid_combos(tier_dirs, filters))
+    # 1. enumerate, then drop combos whose tile doesn't divide THIS shape.
+    # valid_combos is shape-agnostic (one cubin serves all shapes), so e.g. a
+    # BN=512 config is enumerated even when N=2304 (512 does not divide 2304).
+    # Launching it gives a wrong grid -> CUDA_ERROR_LAUNCH_FAILED, which poisons
+    # the context and kills the whole sweep -- so filter by fit up front.
+    combo_list = [(tier, k) for (tier, k) in combos.valid_combos(tier_dirs, filters)
+                  if _fits(tier, k, M, N, K)]
     n_valid = len(combo_list)
     emit("enumerate", n_valid=n_valid)
 
