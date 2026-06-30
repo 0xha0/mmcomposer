@@ -74,6 +74,38 @@ def test_to_torch_backend():
     assert torch.allclose(epi.to_torch(lambda x: x ** 2)(t), t * t, atol=1e-6)
 
 
+# ---- phase 2: multi-input epilogues -----------------------------------------
+def test_arity_and_n_inputs():
+    assert epi.arity(lambda x: x) == 1 and epi.n_inputs(lambda x: x) == 0
+    assert epi.arity(lambda x, c: x * c) == 2 and epi.n_inputs(lambda x, c: x * c) == 1
+    assert epi.arity(lambda x, g, r: x) == 3 and epi.n_inputs(lambda x, g, r: x) == 2
+    with pytest.raises(TypeError):
+        epi.arity(lambda *a: a[0])          # *args
+    with pytest.raises(TypeError):
+        epi.to_cuda(lambda: 0.0)            # no accumulator arg
+
+
+def test_multi_input_lowering():
+    # extra inputs lower to c0, c1, ... ; input 0 stays "x"
+    assert epi.to_cuda(lambda x, c: x * c) == "(x * c0)"
+    assert epi.to_cuda(lambda x, c: x + c) == "(x + c0)"          # residual add
+    assert (epi.to_cuda(lambda x, c: x * sigmoid(x) * c)          # SwiGLU-style
+            == "((x * __fdividef(1.0f, (1.0f + __expf((-x))))) * c0)")
+    assert (epi.to_cuda(lambda x, g, r: x * sigmoid(g) + r)       # two extra inputs
+            == "((x * __fdividef(1.0f, (1.0f + __expf((-c0))))) + c1)")
+    # single-input lowering is unchanged (backward compatible)
+    assert epi.to_cuda(lambda x: x * sigmoid(x)) == "(x * __fdividef(1.0f, (1.0f + __expf((-x)))))"
+
+
+def test_multi_input_to_torch():
+    import torch
+    t = torch.linspace(-2.0, 2.0, 16)
+    c = torch.linspace(1.0, 2.0, 16)
+    assert torch.allclose(epi.to_torch(lambda x, c: x * sigmoid(x) * c)(t, c),
+                          (t * torch.sigmoid(t)) * c, atol=1e-6)
+    assert torch.allclose(epi.to_torch(lambda x, c: x + c)(t, c), t + c, atol=1e-6)
+
+
 def test_rejects_control_flow_and_bad_returns():
     with pytest.raises(TypeError):
         epi.to_cuda(lambda x: x if x else 0)          # bool() on Expr -> blocked

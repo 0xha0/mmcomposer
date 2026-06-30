@@ -28,6 +28,7 @@ Public API:
 from __future__ import annotations
 
 import hashlib
+import inspect
 
 # primitive op name -> CUDA intrinsic (1 arg unless noted)
 _INTRINSIC = {
@@ -47,13 +48,19 @@ class Expr:
     __slots__ = ("op", "args")
 
     def __init__(self, op: str, *args):
-        self.op = op           # 'x' | 'const' | 'neg' | 'add'|'sub'|'mul'|'div'|'pow' | <primitive>
+        self.op = op           # 'in'(idx) | 'const' | 'neg' | 'add'|'sub'|'mul'|'div'|'pow' | <primitive>
         self.args = args
 
-    # -- the single input variable --
+    # -- input variables --
+    # input 0 is the matmul accumulator ("x"); inputs 1.. are extra same-shape
+    # operands ("c0", "c1", ...), e.g. lambda x, c: x * c  (phase 2).
     @staticmethod
-    def input() -> "Expr":
-        return Expr("x")
+    def input(i: int = 0) -> "Expr":
+        return Expr("in", i)
+
+    @staticmethod
+    def inputs(n: int) -> tuple:
+        return tuple(Expr("in", i) for i in range(n))
 
     # -- operator overloads (build the DAG) --
     def __add__(self, o):  return Expr("add", self, _wrap(o))
@@ -107,7 +114,7 @@ def relu(x):
     return maximum(_wrap(x), 0.0)
 
 
-__all__ = ["Expr", "to_cuda", "to_torch", "digest",
+__all__ = ["Expr", "to_cuda", "to_torch", "digest", "arity", "n_inputs",
            "exp", "tanh", "sqrt", "log", "maximum", "minimum", "sigmoid", "relu"]
 
 
@@ -119,8 +126,9 @@ def _fmt_const(v: float) -> str:
 
 def _lower(e: "Expr") -> str:
     op = e.op
-    if op == "x":
-        return "x"
+    if op == "in":
+        i = e.args[0]
+        return "x" if i == 0 else f"c{i - 1}"      # 0 -> accumulator; 1.. -> extra inputs
     if op == "const":
         return _fmt_const(e.args[0]) + "f"
     if op == "neg":
@@ -148,12 +156,30 @@ def _lower(e: "Expr") -> str:
     raise ValueError(f"epilogue: cannot lower op {op!r}")
 
 
-def to_cuda(fn) -> str:
-    """Trace `fn` (one Expr in, one Expr/number out) and return its CUDA fp32
-    expression in terms of the variable ``x``."""
+def arity(fn) -> int:
+    """Number of positional args of an epilogue callable (1 = accumulator only;
+    n = accumulator + (n-1) extra same-shape inputs)."""
     if not callable(fn):
         raise TypeError("epilogue must be a callable (lambda or def)")
-    y = fn(Expr.input())
+    params = list(inspect.signature(fn).parameters.values())
+    for p in params:
+        if p.kind not in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            raise TypeError("epilogue takes only positional args (one per input); "
+                            "no *args/**kwargs/keyword-only")
+    if not params:
+        raise TypeError("epilogue must take at least one arg (the accumulator x)")
+    return len(params)
+
+
+def n_inputs(fn) -> int:
+    """Number of *extra* inputs the epilogue expects (arity - 1)."""
+    return arity(fn) - 1
+
+
+def to_cuda(fn) -> str:
+    """Trace `fn` (n Exprs in -> one Expr/number out) and return its CUDA fp32
+    expression in terms of ``x`` (input 0) and ``c0``, ``c1``, ... (extra inputs)."""
+    y = fn(*Expr.inputs(arity(fn)))
     if isinstance(y, tuple):
         raise TypeError("epilogue must return a single value, not a tuple")
     if not isinstance(y, Expr):
@@ -167,44 +193,47 @@ def digest(fn) -> str:
 
 
 # ---- second backend: lower the same DAG to torch (the verify reference) ----
-def _lower_torch(e: "Expr", t, torch):
+def _lower_torch(e: "Expr", ins, torch):
     op = e.op
-    if op == "x":
-        return t
+    if op == "in":
+        return ins[e.args[0]]                      # input tensor by index
     if op == "const":
         return float(e.args[0])
     if op == "neg":
-        return -_lower_torch(e.args[0], t, torch)
+        return -_lower_torch(e.args[0], ins, torch)
     if op in ("add", "sub", "mul", "div"):
-        a = _lower_torch(e.args[0], t, torch)
-        b = _lower_torch(e.args[1], t, torch)
+        a = _lower_torch(e.args[0], ins, torch)
+        b = _lower_torch(e.args[1], ins, torch)
         return {"add": a + b, "sub": a - b, "mul": a * b, "div": a / b}[op]
     if op == "pow":
-        return _lower_torch(e.args[0], t, torch) ** e.args[1]
+        return _lower_torch(e.args[0], ins, torch) ** e.args[1]
     if op in ("abs", "exp", "tanh", "sqrt", "log"):
         fn = {"abs": torch.abs, "exp": torch.exp, "tanh": torch.tanh,
               "sqrt": torch.sqrt, "log": torch.log}[op]
-        return fn(_lower_torch(e.args[0], t, torch))
+        return fn(_lower_torch(e.args[0], ins, torch))
     if op in ("maximum", "minimum"):
-        a = _lower_torch(e.args[0], t, torch)
-        b = _lower_torch(e.args[1], t, torch)
-        # torch.maximum/minimum need tensors; lift python-float operands.
+        a = _lower_torch(e.args[0], ins, torch)
+        b = _lower_torch(e.args[1], ins, torch)
+        ref = ins[0]                               # tensor to match dtype/device
         if not torch.is_tensor(a):
-            a = torch.as_tensor(a, dtype=t.dtype, device=t.device)
+            a = torch.as_tensor(a, dtype=ref.dtype, device=ref.device)
         if not torch.is_tensor(b):
-            b = torch.as_tensor(b, dtype=t.dtype, device=t.device)
+            b = torch.as_tensor(b, dtype=ref.dtype, device=ref.device)
         return (torch.maximum if op == "maximum" else torch.minimum)(a, b)
     raise ValueError(f"epilogue: cannot lower op {op!r} to torch")
 
 
 def to_torch(fn):
-    """Trace `fn` and return a callable applying the same elementwise op to a
-    torch tensor -- the reference used to verify a fused epilogue kernel, mirroring
-    `to_cuda` (in higher precision; uses torch's exact exp/div, not fast intrinsics)."""
+    """Trace `fn` and return a callable applying the same elementwise op to torch
+    tensors -- the reference used to verify a fused epilogue kernel, mirroring
+    `to_cuda` (in higher precision; uses torch's exact exp/div, not fast intrinsics).
+    The returned callable takes the accumulator tensor then the extra inputs:
+    ``ref_fn(a @ b, c0, c1, ...)``."""
     import torch
-    y = fn(Expr.input())
+    n = arity(fn)
+    y = fn(*Expr.inputs(n))
     if isinstance(y, tuple):
         raise TypeError("epilogue must return a single value, not a tuple")
     if not isinstance(y, Expr):
         y = _wrap(y)
-    return lambda t: _lower_torch(y, t, torch)
+    return lambda *ins: _lower_torch(y, ins, torch)
