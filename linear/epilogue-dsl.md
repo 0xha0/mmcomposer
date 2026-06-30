@@ -57,7 +57,7 @@ Formal spec: `mmcomposer/EPILOGUE.md`.
 
 | epilogue | lowered CUDA (fp32, in terms of `x`) |
 |----------|--------------------------------------|
-| `lambda x: x * sigmoid(x)` (SiLU) | `(x * (1.0f / (1.0f + __expf((-x)))))` |
+| `lambda x: x * sigmoid(x)` (SiLU) | `(x * __fdividef(1.0f, (1.0f + __expf((-x)))))` |
 | `relu` | `fmaxf(x, 0.0f)` |
 | `lambda x: minimum(maximum(x,0.),6.)` (ReLU6) | `fminf(fmaxf(x, 0.0f), 6.0f)` |
 | GELU (tanh approx) | `((0.5f*x) * (1.0f + tanhf((0.79788456f*(x + (0.044715f*(x*x*x)))))))` |

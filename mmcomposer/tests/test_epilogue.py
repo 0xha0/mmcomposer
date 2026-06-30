@@ -21,7 +21,7 @@ def test_arithmetic_and_constants():
     assert epi.to_cuda(lambda x: x + 1) == "(x + 1.0f)"
     assert epi.to_cuda(lambda x: 1 - x) == "(1.0f - x)"
     assert epi.to_cuda(lambda x: -x) == "(-x)"
-    assert epi.to_cuda(lambda x: 1.0 / x) == "(1.0f / x)"
+    assert epi.to_cuda(lambda x: 1.0 / x) == "__fdividef(1.0f, x)"   # fast division
 
 
 def test_primitives_map_to_intrinsics():
@@ -34,15 +34,15 @@ def test_primitives_map_to_intrinsics():
 
 
 def test_composites_expand_to_primitives():
-    # sigmoid(x) = 1/(1+exp(-x))
-    assert epi.to_cuda(sigmoid) == "(1.0f / (1.0f + __expf((-x))))"
+    # sigmoid(x) = 1/(1+exp(-x)); division lowers to the fast __fdividef
+    assert epi.to_cuda(sigmoid) == "__fdividef(1.0f, (1.0f + __expf((-x))))"
     # relu(x) = maximum(x, 0)
     assert epi.to_cuda(relu) == "fmaxf(x, 0.0f)"
 
 
 def test_silu_and_def_form():
     silu_lambda = lambda x: x * sigmoid(x)            # noqa: E731
-    expected = "(x * (1.0f / (1.0f + __expf((-x)))))"
+    expected = "(x * __fdividef(1.0f, (1.0f + __expf((-x)))))"
     assert epi.to_cuda(silu_lambda) == expected
 
     def silu(x):                                       # def works too

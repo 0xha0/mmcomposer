@@ -125,9 +125,14 @@ def _lower(e: "Expr") -> str:
         return _fmt_const(e.args[0]) + "f"
     if op == "neg":
         return f"(-{_lower(e.args[0])})"
-    if op in ("add", "sub", "mul", "div"):
-        sym = {"add": "+", "sub": "-", "mul": "*", "div": "/"}[op]
+    if op in ("add", "sub", "mul"):
+        sym = {"add": "+", "sub": "-", "mul": "*"}[op]
         return f"({_lower(e.args[0])} {sym} {_lower(e.args[1])})"
+    if op == "div":
+        # fast approximate division (rcp.approx, ~2 ULP) -- far below the bf16
+        # output precision, and much cheaper than IEEE division.  This is what
+        # makes sigmoid (1/(1+exp(-x))) fast, matching the hand-tuned kernels.
+        return f"__fdividef({_lower(e.args[0])}, {_lower(e.args[1])})"
     if op == "pow":
         base, n = e.args
         # small non-negative integer power -> repeated multiply (avoids slow powf)

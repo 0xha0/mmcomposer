@@ -57,7 +57,8 @@ Violations are rejected at trace time (a `TypeError`), not silently miscompiled.
 ### 3.2 Operators
 | form | meaning | notes |
 |------|---------|-------|
-| `a + b`, `a - b`, `a * b`, `a / b` | fp32 arithmetic | either operand may be a constant |
+| `a + b`, `a - b`, `a * b` | fp32 arithmetic | either operand may be a constant |
+| `a / b` | fast division → `__fdividef` | ~2 ULP, far below bf16 output precision |
 | `-a` | negation | |
 | `a ** n` | power | `n` must be a **constant**; integer `0..8` expands to repeated multiply, else `powf` |
 | `abs(a)` | absolute value | Python `abs()`, lowered to `fabsf` |
@@ -137,8 +138,8 @@ cubin tag.
 |----------|----------------------|
 | `lambda x: x`                         | `x` |
 | `relu`                                | `fmaxf(x, 0.0f)` |
-| `sigmoid`                             | `(1.0f / (1.0f + __expf((-x))))` |
-| `lambda x: x * sigmoid(x)` (silu)     | `(x * (1.0f / (1.0f + __expf((-x)))))` |
+| `sigmoid`                             | `__fdividef(1.0f, (1.0f + __expf((-x))))` |
+| `lambda x: x * sigmoid(x)` (silu)     | `(x * __fdividef(1.0f, (1.0f + __expf((-x)))))` |
 | `lambda x: minimum(maximum(x,0.),6.)` | `fminf(fmaxf(x, 0.0f), 6.0f)` |
 | `lambda x: 0.5*x*(1.+tanh(0.79788456*(x+0.044715*x**3)))` | `((0.5f * x) * (1.0f + tanhf((0.79788456f * (x + (0.044715f * (x * x * x)))))))` |
 
