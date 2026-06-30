@@ -69,14 +69,25 @@ store strategies (int4 store) would need a different splice — out of scope for
 - **No clean knob discriminator** — crashers span `tss1`/`tss2`, `ns` 4/5/6, all `nw`/`gsm`.
   So it's a **secondary kernel interaction** (scheduling/occupancy/a latent race that the
   extra load + registers expose), not a logic error a static checker can catch.
-- **Non-deterministic** — the same config sometimes fails pre-launch (`INVALID_VALUE`,
-  clean) and sometimes `LAUNCH_FAILED` (poisons the context).
-- **Plain matmul is unaffected** — a clean plain production tune at the same shape runs
-  **198/198, 0 skips** (best 1324 TFLOPS). So this is specific to the `c0`-read path, *not*
-  a pre-existing plain-matmul bug. (An earlier hypothesis that it was pre-existing was a
-  measurement artifact of single-process probes where one poison cascades.)
+- **Non-deterministic** — the same config has been observed to pass, fail pre-launch
+  (`INVALID_VALUE`, clean), or `LAUNCH_FAILED` (poisons the context) across runs.
+- **Scope is uncertain (do NOT over-claim epilogue-specificity).** One clean plain
+  production tune ran 198/198 (best 1324 TFLOPS), which suggested plain was immune — but a
+  later *isolated* run showed **plain matmul also failing** on a suspect config (e.g.
+  `ns5 nw4 gsm8 tss1`). So the most defensible read is a **non-deterministic launch
+  flakiness in certain configs themselves**, which the epilogue sweep hits reliably and a
+  plain sweep usually (luckily) doesn't. Pinning the true scope needs controlled repeated
+  trials + `compute-sanitizer`; my characterization has flip-flopped, so treat it as open.
 - **Why it blocks the sweep**: a `LAUNCH_FAILED` poisons the CUDA context for the whole
   process, so the in-process tuned-variant sweep — and any post-tune build/launch — dies.
+
+## Reproducers
+
+- `examples/quickstart_epilogue_aux.py` — the intended `aux=` quickstart; **expected to
+  crash today** via the full tuned-variant sweep (the real-API path).
+- `repro_aux_launch_failed.py` — minimal: builds a few suspect configs directly (no sweep)
+  and launches plain vs `(a@b)*c` synced; fast, and prints the first failure. (Outcomes
+  vary run-to-run; that variance *is* the bug.)
 
 Autotune hardening already landed (commit `815354c`): drop combos whose dynamic SMEM
 exceeds the device opt-in cap; wrap the whole per-combo body in try/except (so a poison
