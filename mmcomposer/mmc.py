@@ -16,7 +16,6 @@ contiguous, C row-major; M and N multiples of 256, K a multiple of 64; B200
 from __future__ import annotations
 
 import hashlib
-import json
 import pathlib
 import sys
 import time
@@ -29,7 +28,6 @@ from . import cache as kcache
 from . import autotune
 from . import epilogue as epi
 from . import swiglu as _swiglu
-from .codegen import generate as _codegen
 
 DEFAULT_DTYPE = "bf16"
 DEFAULT_ARCH = kcache.DEFAULT_ARCH
@@ -108,31 +106,13 @@ def _build(config):
 
 
 def _build_epilogue(config, cuda_expr):
-    """Reuse the shape's tuned geometry but splice in an elementwise epilogue:
-    render kernel.cu with EPILOGUE_FN=cuda_expr (via the codegen engine directly),
-    compile a cubin tagged by (geometry, epilogue), and bind a runtime callable.
-    The kernel symbol is unchanged, so `config` still drives the launch."""
+    """Render -> compile -> bind for `config` with an elementwise epilogue spliced
+    in.  Uses the same `autotune._render` path (and build tag) as the sweep, so the
+    winner's already-compiled fused cubin is reused (compile_one skips nvcc)."""
     tier = _tier_for(config)
-    cg = mc.knob_kwargs(
-        config["bm"], config["bn"], config["bk"], config["ns"],
-        config["gsm"], config["nw"],
-        persistent=config.get("persistent", 0), ld_width=config.get("ld_width", 8),
-        overlap=config.get("overlap", 0), split_epilogue=config.get("split_epilogue", 0),
-        l1_no_alloc=config.get("l1_no_alloc", 0), tma_pipelined=config.get("tma_pipelined", 0),
-        tma_store_stages=config.get("tma_store_stages", 2),
-        single_tmem=config.get("single_tmem", 0))
-    cg["skeleton"] = tier["dir"]
-    cg["TWO_CTA"] = int(tier["cluster"])
-    cg["EPILOGUE_FN"] = cuda_expr
-    src_text = _codegen.generate_kernel(cg)
-    # one cubin per (geometry + epilogue); cg already captures both.
-    geo = hashlib.sha1(json.dumps(cg, sort_keys=True).encode()).hexdigest()[:16]
-    d = kcache.cache_root() / "build" / DEFAULT_ARCH / f"epi_{geo}"
-    d.mkdir(parents=True, exist_ok=True)
-    src = d / "kernel.cu"
-    if not src.exists() or src.read_text() != src_text:
-        src.write_text(src_text)
-    cubin = compiler.compile_one(str(src))
+    build_root = kcache.cache_root() / "build" / DEFAULT_ARCH
+    src = autotune._render(tier, config, build_root, epilogue=cuda_expr)
+    cubin = compiler.compile_one(src)
     return runtime.kernel(config, cubin)
 
 
@@ -206,26 +186,28 @@ def get_tuned_kernel(a, b, *, tune_if_missing=True):
 def get_epilogue_kernel(a, b, epilogue, *, tune_if_missing=True):
     """Like get_tuned_kernel, but fuses an elementwise epilogue (see
     mmcomposer/epilogue.py) onto each output element.  `epilogue` is a one-in/
-    one-out callable (lambda or def) over the epilogue DSL.  Reuses the shape's
-    tuned geometry and compiles an epilogue-specific cubin (cached by digest)."""
+    one-out callable (lambda or def) over the epilogue DSL.
+
+    The fused kernel is a tuned **variant**: keyed by (shape, epilogue digest), it
+    auto-tunes the GEMM *with the epilogue spliced in* on first use (so the winning
+    config is the best one for the fused kernel, not the plain GEMM), and caches it."""
     M, N, K = _validate(a, b)
-    key = kcache.shape_key(M, N, K, DEFAULT_DTYPE, DEFAULT_ARCH)
     cuda, tag = _trace(epilogue)             # trace + lower (memoized by object)
-    ck = (key, tag)
-    if ck in _EPI_KERNELS:
-        return _EPI_KERNELS[ck]
+    key = kcache.shape_key(M, N, K, DEFAULT_DTYPE, DEFAULT_ARCH, epi=tag)
+    if key in _EPI_KERNELS:
+        return _EPI_KERNELS[key]
     rec = kcache.best(key)
     if rec is None:
         if not tune_if_missing:
             raise RuntimeError(
-                f"no tuned config for {key}; run mmc.tune({M}, {N}, {K}) first "
-                f"or call with tune_if_missing=True")
+                f"no tuned config for {key}; run with tune_if_missing=True")
         print(f"[mmcomposer] no tuned kernel for {M}x{N}x{K} {DEFAULT_DTYPE} on "
-              f"{DEFAULT_ARCH} -- auto-tuning now (one-time per machine; cached to "
-              f"{kcache.cache_root()} and reused in future sessions)",
+              f"{DEFAULT_ARCH} with this epilogue -- auto-tuning the fused variant now "
+              f"(one-time per machine; cached to {kcache.cache_root()} and reused later)",
               file=sys.stderr, flush=True)
         t0 = time.monotonic()
-        summary = tune(M, N, K, on_event=_autotune_progress())
+        summary = tune(M, N, K, epilogue=cuda, epi_tag=tag,
+                       ref_fn=epi.to_torch(epilogue), on_event=_autotune_progress())
         rec = kcache.best(key)
         if rec is None:
             raise RuntimeError(f"tuning produced no valid config for {key}: "
@@ -234,7 +216,7 @@ def get_epilogue_kernel(a, b, epilogue, *, tune_if_missing=True):
               f"best {rec['tflops']:.0f} TFLOPS ({rec['vs_cublas']:.0%} of cuBLAS) -- cached.",
               file=sys.stderr, flush=True)
     fn = _build_epilogue(rec["config"], cuda)
-    _EPI_KERNELS[ck] = fn
+    _EPI_KERNELS[key] = fn
     return fn
 
 

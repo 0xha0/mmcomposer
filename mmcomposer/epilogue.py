@@ -107,7 +107,7 @@ def relu(x):
     return maximum(_wrap(x), 0.0)
 
 
-__all__ = ["Expr", "to_cuda", "digest",
+__all__ = ["Expr", "to_cuda", "to_torch", "digest",
            "exp", "tanh", "sqrt", "log", "maximum", "minimum", "sigmoid", "relu"]
 
 
@@ -164,3 +164,47 @@ def to_cuda(fn) -> str:
 def digest(fn) -> str:
     """Short stable hash of the epilogue (for cache keys / cubin tags)."""
     return hashlib.sha1(to_cuda(fn).encode()).hexdigest()[:10]
+
+
+# ---- second backend: lower the same DAG to torch (the verify reference) ----
+def _lower_torch(e: "Expr", t, torch):
+    op = e.op
+    if op == "x":
+        return t
+    if op == "const":
+        return float(e.args[0])
+    if op == "neg":
+        return -_lower_torch(e.args[0], t, torch)
+    if op in ("add", "sub", "mul", "div"):
+        a = _lower_torch(e.args[0], t, torch)
+        b = _lower_torch(e.args[1], t, torch)
+        return {"add": a + b, "sub": a - b, "mul": a * b, "div": a / b}[op]
+    if op == "pow":
+        return _lower_torch(e.args[0], t, torch) ** e.args[1]
+    if op in ("abs", "exp", "tanh", "sqrt", "log"):
+        fn = {"abs": torch.abs, "exp": torch.exp, "tanh": torch.tanh,
+              "sqrt": torch.sqrt, "log": torch.log}[op]
+        return fn(_lower_torch(e.args[0], t, torch))
+    if op in ("maximum", "minimum"):
+        a = _lower_torch(e.args[0], t, torch)
+        b = _lower_torch(e.args[1], t, torch)
+        # torch.maximum/minimum need tensors; lift python-float operands.
+        if not torch.is_tensor(a):
+            a = torch.as_tensor(a, dtype=t.dtype, device=t.device)
+        if not torch.is_tensor(b):
+            b = torch.as_tensor(b, dtype=t.dtype, device=t.device)
+        return (torch.maximum if op == "maximum" else torch.minimum)(a, b)
+    raise ValueError(f"epilogue: cannot lower op {op!r} to torch")
+
+
+def to_torch(fn):
+    """Trace `fn` and return a callable applying the same elementwise op to a
+    torch tensor -- the reference used to verify a fused epilogue kernel, mirroring
+    `to_cuda` (in higher precision; uses torch's exact exp/div, not fast intrinsics)."""
+    import torch
+    y = fn(Expr.input())
+    if isinstance(y, tuple):
+        raise TypeError("epilogue must return a single value, not a tuple")
+    if not isinstance(y, Expr):
+        y = _wrap(y)
+    return lambda t: _lower_torch(y, t, torch)

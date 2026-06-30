@@ -426,8 +426,11 @@ def knob_kwargs(bm, bn, bk, ns, gsm, nw, persistent=0, ld_width=8,
 def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, ld_width=8,
                   overlap=0, split_epilogue=0, l1_no_alloc=0,
                   tma_pipelined=0, tma_store_stages=2,
-                  single_tmem=0) -> str:
-    """Return the kernel.cu specialized to this knob combo (delegates to codegen)."""
+                  single_tmem=0, epilogue=None) -> str:
+    """Return the kernel.cu specialized to this knob combo (delegates to codegen).
+
+    `epilogue` is an optional CUDA fp32 expression in terms of `x` (the
+    elementwise epilogue, see mmcomposer/epilogue.py) fused into the store path."""
     config = knob_kwargs(bm, bn, bk, ns, gsm, nw, ld_width=ld_width,
                          overlap=overlap, split_epilogue=split_epilogue,
                          l1_no_alloc=l1_no_alloc,
@@ -436,6 +439,8 @@ def render_kernel(tier: dict, bm, bn, bk, ns, gsm, nw, ld_width=8,
                          single_tmem=single_tmem)
     config["skeleton"] = tier["dir"]
     config["TWO_CTA"] = int(tier["cluster"])   # cluster tier -> the cta_group::2 #if arms
+    if epilogue:
+        config["EPILOGUE_FN"] = epilogue
     return _generate_kernel(config)
 
 

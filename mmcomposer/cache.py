@@ -34,9 +34,14 @@ def cache_root() -> pathlib.Path:
     return pathlib.Path(base) / "mmcomposer"
 
 
-def shape_key(M, N, K, dtype: str = DEFAULT_DTYPE, arch: str = DEFAULT_ARCH) -> str:
-    """The cache key for a shape: e.g. '4096x4096x4096_bf16_sm_100a'."""
-    return f"{M}x{N}x{K}_{dtype}_{arch}"
+def shape_key(M, N, K, dtype: str = DEFAULT_DTYPE, arch: str = DEFAULT_ARCH,
+              epi: str | None = None) -> str:
+    """The cache key for a shape: e.g. '4096x4096x4096_bf16_sm_100a'.
+
+    `epi` (an epilogue digest) makes a fused epilogue a distinct tuned variant:
+    e.g. '4096x4096x4096_bf16_sm_100a_epiA12ED76C8D'.  None -> plain matmul."""
+    base = f"{M}x{N}x{K}_{dtype}_{arch}"
+    return f"{base}_epi{epi}" if epi else base
 
 
 class LocalDiskBackend:

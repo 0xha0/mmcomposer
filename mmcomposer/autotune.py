@@ -64,9 +64,14 @@ def with_filter_override(filters, key, spec):
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
-def _render(tier, k, build_root) -> str:
-    """Render kernel.cu for (tier, k) into a tagged build dir; return its path."""
+def _render(tier, k, build_root, epilogue=None) -> str:
+    """Render kernel.cu for (tier, k) into a tagged build dir; return its path.
+
+    `epilogue` (a CUDA fp32 expression) is spliced in and folded into the build
+    tag, so a fused variant gets its own cubin (no collision with the plain one)."""
     sig = {**k, "dir": tier["dir"], "cluster": tier["cluster"]}
+    if epilogue:
+        sig["epilogue"] = epilogue
     tag = hashlib.sha1(json.dumps(sig, sort_keys=True).encode()).hexdigest()[:16]
     d = build_root / tag
     d.mkdir(parents=True, exist_ok=True)
@@ -77,7 +82,7 @@ def _render(tier, k, build_root) -> str:
         split_epilogue=k.get("split_epilogue", 0), l1_no_alloc=k.get("l1_no_alloc", 0),
         tma_pipelined=k.get("tma_pipelined", 0),
         tma_store_stages=k.get("tma_store_stages", 2),
-        single_tmem=k.get("single_tmem", 0)))
+        single_tmem=k.get("single_tmem", 0), epilogue=epilogue))
     return str(src)
 
 
@@ -115,14 +120,21 @@ def scope_to_dirs_filters(scope: str = "production"):
 def tune(M, N, K, *, tier_dirs, filters, dtype="bf16", arch=kcache.DEFAULT_ARCH,
          tol=CORRECT_TOL, warmup_ms=None, rep_ms=None,
          cublas_samples=3, cublas_warmup_samples=1, fresh=True,
-         cache_obj=None, on_event=None) -> dict:
+         cache_obj=None, on_event=None,
+         epilogue=None, epi_tag=None, ref_fn=None) -> dict:
     """Run an in-process timing sweep on the local GPU.  Streams each correct
     combo's result into the cache; returns a summary dict
-    {ok, key, cublas_tflops, best, n_valid, n_compiled, n_correct, error}."""
+    {ok, key, cublas_tflops, best, n_valid, n_compiled, n_correct, error}.
+
+    For a fused **epilogue variant**, pass `epilogue` (the CUDA fp32 expression),
+    `epi_tag` (its digest, for the cache key), and `ref_fn` (a callable applying
+    the same op to the fp32 reference tensor, e.g. epilogue.to_torch(fn)); every
+    candidate is then compiled + benchmarked with the epilogue spliced in and
+    verified against `ref_fn(a @ b)`."""
     import torch
 
     kc = cache_obj if cache_obj is not None else kcache.Cache()
-    key = kcache.shape_key(M, N, K, dtype, arch)
+    key = kcache.shape_key(M, N, K, dtype, arch, epi=epi_tag)
     if fresh:
         kc.clear(key)
     bench_kw = {}
@@ -142,7 +154,8 @@ def tune(M, N, K, *, tier_dirs, filters, dtype="bf16", arch=kcache.DEFAULT_ARCH,
 
     # 2. render (codegen) + 3. compile (parallel, CPU)
     build_root = kcache.cache_root() / "build" / arch
-    builds = [(tier, k, _render(tier, k, build_root)) for tier, k in combo_list]
+    builds = [(tier, k, _render(tier, k, build_root, epilogue=epilogue))
+              for tier, k in combo_list]
     emit("compile", done=0, total=n_valid)
     comp = compiler.compile_many([src for (_, _, src) in builds])
     ok = [(tier, k, src) for (tier, k, src) in builds if comp[src].ok]
@@ -153,6 +166,8 @@ def tune(M, N, K, *, tier_dirs, filters, dtype="bf16", arch=kcache.DEFAULT_ARCH,
     a = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
     b = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
     ref = a.float() @ b.float()
+    if ref_fn is not None:                 # fused epilogue: reference applies the op too
+        ref = ref_fn(ref)
     flops = bench.gemm_flops(M, N, K)
     cub = bench.benchmark_median(lambda: torch.mm(a, b), flops=flops,
                                  samples=cublas_samples,

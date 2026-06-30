@@ -65,6 +65,15 @@ def test_digest_stable_and_distinct():
     assert epi.digest(relu) != epi.digest(sigmoid)
 
 
+def test_to_torch_backend():
+    import torch
+    t = torch.linspace(-3.0, 3.0, 64)
+    assert torch.allclose(epi.to_torch(lambda x: x * sigmoid(x))(t),
+                          t * torch.sigmoid(t), atol=1e-6)
+    assert torch.allclose(epi.to_torch(relu)(t), t.clamp_min(0.0), atol=1e-6)   # const lifted
+    assert torch.allclose(epi.to_torch(lambda x: x ** 2)(t), t * t, atol=1e-6)
+
+
 def test_rejects_control_flow_and_bad_returns():
     with pytest.raises(TypeError):
         epi.to_cuda(lambda x: x if x else 0)          # bool() on Expr -> blocked
@@ -106,13 +115,15 @@ _EDL_CASES = [
 
 @pytest.fixture(scope="module")
 def _gpu_ctx():
-    """Tight pretune in an isolated cache; return (mmc, a, b, base) with a@b~N(0,1)."""
+    """Tight plain pretune in an isolated cache; return (mmc, a, b, base, build_epi).
+    `build_epi(edl)` compiles a fused kernel on the pretuned config (reuse-geometry)
+    so per-op correctness checks stay fast (no ~100 s tune per op)."""
     import os
     import tempfile
     import torch
     if not torch.cuda.is_available():
         pytest.skip("no CUDA")
-    from mmcomposer import autotune, mvp_core as mc
+    from mmcomposer import autotune, mvp_core as mc, cache as kc
     import mmcomposer.mmc as mmc
 
     old = os.environ.get("MMCOMPOSER_CACHE_DIR")
@@ -126,13 +137,18 @@ def _gpu_ctx():
     s = autotune.tune(M, N, K, tier_dirs=ws, filters=tight,
                       cublas_samples=1, cublas_warmup_samples=0)
     assert s["ok"], "pre-tune failed"
+    plain_cfg = kc.best(kc.shape_key(M, N, K))["config"]
     torch.manual_seed(0)
     sc = K ** -0.25                                    # a@b ~ N(0,1)
     a = (torch.randn(M, K, device="cuda") * sc).to(torch.bfloat16)
     b = (torch.randn(K, N, device="cuda") * sc).to(torch.bfloat16)
     base = a.float() @ b.float()
+
+    def build_epi(edl):
+        return mmc._build_epilogue(plain_cfg, epi.to_cuda(edl))
+
     try:
-        yield mmc, a, b, base
+        yield mmc, a, b, base, build_epi
     finally:
         if old is None:
             os.environ.pop("MMCOMPOSER_CACHE_DIR", None)
@@ -142,8 +158,8 @@ def _gpu_ctx():
 
 def test_identity_epilogue_is_bit_exact(_gpu_ctx):
     """The identity epilogue must produce exactly the same bits as a plain matmul."""
-    mmc, a, b, base = _gpu_ctx
-    ci = mmc.matmul(a, b, epilogue=lambda x: x)
+    mmc, a, b, base, build_epi = _gpu_ctx
+    ci = build_epi(lambda x: x)(a, b)
     cp = mmc.matmul(a, b)
     assert (ci.float() - cp.float()).abs().max().item() == 0.0
 
@@ -151,11 +167,32 @@ def test_identity_epilogue_is_bit_exact(_gpu_ctx):
 @pytest.mark.parametrize("name,edl,ref", _EDL_CASES, ids=[c[0] for c in _EDL_CASES])
 def test_builtin_fused_matches_torch(_gpu_ctx, name, edl, ref):
     """Each builtin/op, fused as an epilogue, matches the torch reference in fp32."""
-    mmc, a, b, base = _gpu_ctx
-    c = mmc.matmul(a, b, epilogue=edl)
+    mmc, a, b, base, build_epi = _gpu_ctx
+    c = build_epi(edl)(a, b)
     want = ref(base)
     rel = ((c.float() - want).norm() / (want.norm() + 1e-12)).item()
     assert rel < 5e-2, f"{name}: rel_err {rel:.2e}"
+
+
+def test_epilogue_tuned_as_variant(_gpu_ctx):
+    """The full tuned-variant path: a tight sweep WITH the epilogue (verified via
+    to_torch), keyed by (shape, digest); then matmul(epilogue=) hits that cache."""
+    mmc, a, b, base, build_epi = _gpu_ctx
+    from mmcomposer import autotune, mvp_core as mc
+    M = N = K = 512
+    silu = lambda x: x * sigmoid(x)                    # noqa: E731
+    cuda, tag = epi.to_cuda(silu), epi.digest(silu)
+    ws = list(dict.fromkeys(t["dir"] for k, t in mc.TIER_MAP.items() if t and k[0]))
+    tight = {"bn": [256], "ns": [4], "gsm": [8], "nw": [8], "two_cta": [1],
+             "persistent": [1], "overlap": [1], "split_epilogue": [0],
+             "l1_no_alloc": [0], "tma_pipelined": [1], "tma_store_stages": [2],
+             "single_tmem": [0]}
+    s = autotune.tune(M, N, K, tier_dirs=ws, filters=tight, epilogue=cuda, epi_tag=tag,
+                      ref_fn=epi.to_torch(silu), cublas_samples=1, cublas_warmup_samples=0)
+    assert s["ok"], "fused-epilogue tune found no correct combo (to_torch verify?)"
+    c = mmc.matmul(a, b, epilogue=silu)                # hits the (shape, digest) cache
+    want = base * base.sigmoid()
+    assert ((c.float() - want).norm() / want.norm()).item() < 5e-2
 
 
 if __name__ == "__main__":
