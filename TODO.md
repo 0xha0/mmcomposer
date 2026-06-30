@@ -50,19 +50,14 @@ the `CUtensorMap` is opaque, so the base pointer can't be byte-patched — a cha
 output pointer requires a re-encode. Worth little when the output buffer is reused
 (already cached) or at large shapes.
 
-### 3. Tune the epilogue as a matmul *variant*  *(perf; epilogue feature)*
-Phase-1 epilogues **reuse the shape's plain-matmul winner** and splice the op in.
-But the extra epilogue ALU shifts the optimal config (register pressure, epilogue↔
-K-loop overlap), so the plain winner isn't best for the fused kernel: at FFN
-32768×4608×768 the bare GEMM is ~0.175 ms (1300 TFLOPS) but fused SiLU is
-~0.194–0.214 ms (1100–1200 TFLOPS), a ~10–20% gap. Make the epilogue a tuned
-variant: key the results/cubin cache by `(shape, epilogue digest)`, thread the
-epilogue through `autotune` so every candidate is compiled+benchmarked *with* it,
-and add an `epilogue.to_torch(fn)` backend (lower the same `Expr` DAG to torch)
-so the tune's correctness check references the activation too. Cost: ~100 s tune
-per (shape, epilogue), one-time + cached. First step: confirm an epilogue-aware
-sweep actually beats the reuse-geometry number (i.e. the gap is tunable, not
-irreducible activation ALU). The hand-tuned SwiGLU (gate ~free) suggests it is.
+### ~~3. Tune the epilogue as a matmul *variant*~~  *(done — commit `757210d`)*
+Phase-1 epilogues reused the plain-matmul winner; the extra epilogue ALU shifts
+the optimum, leaving ~10–20% on the table. Now an epilogue is a tuned variant:
+cache keyed by `(shape, epilogue digest)`, the epilogue threaded through `autotune`
+(every candidate compiled+benchmarked with it), and an `epilogue.to_torch(fn)`
+backend for the verify reference. Confirmed it picks a different config (FFN
+32768×4608×768: fused SiLU `nw=8` vs plain `nw=4`) → 0.187 ms / 1237 TFLOPS,
+1.09× the bare GEMM and 1.7× faster than torch.
 
 ## Larger / future
 

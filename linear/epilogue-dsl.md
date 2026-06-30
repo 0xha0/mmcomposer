@@ -72,11 +72,17 @@ Formal spec: `mmcomposer/EPILOGUE.md`.
 
 ## Design decisions
 
-1. **Tuned geometry is epilogue-independent.** We do **not** re-autotune per
-   epilogue. The optimal tiling/knobs for a shape are a property of the GEMM, not
-   of a cheap per-element op. So we reuse the shape's existing winning config and
-   only recompile a cubin with the epilogue spliced in. (One autotune per shape,
-   ever; many epilogues reuse it.)
+1. **An epilogue is a tuned matmul *variant*.** A fused kernel is keyed by
+   `(shape, epilogue digest)` and auto-tuned **with the epilogue spliced into every
+   candidate** on first use — like any other knob (BN, NS, …), it produces a custom
+   kernel that gets its own sweep. The winning config is the best one *for the fused
+   kernel*, which differs from the plain GEMM: at FFN 32768×4608×768 the plain GEMM
+   picks `nw=4`, but fused SiLU picks `nw=8` (more epilogue warps to hide the
+   activation ALU). (We first shipped a reuse-the-plain-config version; tuning the
+   variant recovered the residual ~10–20% gap.) Cost: one ~100 s sweep per
+   (shape, epilogue), one-time + cached; many *calls* of the same epilogue reuse it.
+   Verification of a fused candidate uses `epilogue.to_torch(fn)` — the same `Expr`
+   DAG lowered to torch — since the candidate outputs `f(a@b)`, not `a@b`.
 2. **The DSL is a real language, not arbitrary Python.** Python *syntax*, but a
    restricted, control-flow-free expression language with formally defined
    elementwise/fp32 semantics — so it can be traced and compiled deterministically.
@@ -104,8 +110,10 @@ Formal spec: `mmcomposer/EPILOGUE.md`.
 ## Performance
 
 **Kernel (measured, B200, FFN 32768×4608×768):** bare GEMM 0.175 ms; fused
-matmul+SiLU **0.194 ms** — only **1.10×** the bare GEMM (activation ~free), and
-**1.7× faster** than torch doing matmul + a separate SiLU kernel (0.314 ms). The
+matmul+SiLU **0.187 ms / 1237 TFLOPS** — only **1.09×** the bare GEMM (activation
+~free), and **1.7× faster** than torch doing matmul + a separate SiLU kernel
+(0.313 ms). The tuned variant picks a different config than plain (`nw=8` vs `nw=4`
+— more epilogue warps to hide the activation). The
 win is largest on memory-bound shapes (small K, large output), where torch's
 separate activation pass is a full extra GMEM round trip; on compute-bound squares
 the GEMM dominates and the gap is small. (This relies on the fast-math lowering —
@@ -137,13 +145,16 @@ design decision #7; with IEEE division the fused SiLU was 0.666 ms / 2× *slower
 - Codegen: `generate_kernel` injects `mmc_epi(float)` from `EPILOGUE_FN`; both
   epilogue fragments route conversions through it (identity = no-op).
 - API: `mmc.matmul(a, b, epilogue=...)` and `mmc.get_epilogue_kernel(a, b, fn)`;
-  reuses tuned geometry, compiles+caches an epilogue cubin keyed by digest, async
-  on torch's current stream.
+  **tunes the fused variant** keyed by `(shape, digest)`, caches it, async on
+  torch's current stream.
+- Tuned variant: `autotune` threads the epilogue through the whole sweep;
+  `epilogue.to_torch` provides the verify reference; the variant picks its own best
+  config (FFN: `nw=8` vs plain `nw=4`).
 - GPU-verified on B200: identity == plain (bit-exact); SiLU / ReLU / GELU match
-  torch to ~1.7e-3. **30 tests** (CPU lowering + op-by-op GPU correctness for every
-  builtin/operator).
+  torch to ~1.7e-3. **32 tests** (CPU lowering incl. `to_torch`; op-by-op GPU
+  correctness for every builtin/operator; + the tuned-variant path).
 - Fast-math lowering (`div` → `__fdividef`, `exp` → `__expf`) → fused SiLU is
-  ~1.10× the bare GEMM and 1.7× faster than torch at an FFN shape.
+  ~1.09× the bare GEMM and 1.7× faster than torch at an FFN shape.
 - `examples/quickstart_epilogue.py` — runnable showcase.
 
 **Phase 2 (designed, not started):**

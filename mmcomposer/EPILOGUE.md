@@ -148,13 +148,19 @@ and applied to every element before the bf16 store.
 
 ---
 
-## 7. Caching
+## 7. Caching & tuning
 
-A specific epilogue produces a distinct cubin. mmcomposer **reuses the shape's
-tuned geometry** (it does not re-autotune per epilogue): it takes the winning
-config for `(M, N, K)`, splices in `mmc_epi`, and compiles an epilogue-specific
-cubin tagged by `digest(fn)`. The in-process/disk caches key on
-`(M, N, K, dtype, arch, epilogue_digest)`.
+An epilogue is a tuned **variant** of the matmul, keyed by
+`(M, N, K, dtype, arch, epilogue_digest)`. On first use of a new (shape, epilogue)
+the GEMM is auto-tuned **with the epilogue spliced into every candidate**, so the
+winning config is the best one *for the fused kernel* (it can differ from the plain
+GEMM — e.g. more epilogue warps to hide the activation). The winner + its cubin are
+cached on disk; later calls (and future sessions) reuse them. Verification during
+the sweep compares against `to_torch(fn)(a @ b)` (the same op evaluated in torch),
+since a fused candidate outputs `f(a @ b)`.
+
+Cost: one autotune per (shape, epilogue), one-time per machine; the plain matmul
+and every distinct epilogue are independent cache entries.
 
 ---
 
