@@ -26,6 +26,7 @@ from . import compiler
 from . import runtime
 from . import cache as kcache
 from . import autotune
+from . import autotune_isolated
 from . import epilogue as epi
 from . import swiglu as _swiglu
 
@@ -142,18 +143,21 @@ def _autotune_progress():
 
 
 # ---- public API -----------------------------------------------------------
-def tune(M, N, K, *, dtype=DEFAULT_DTYPE, scope="production", **kw) -> dict:
+def tune(M, N, K, *, dtype=DEFAULT_DTYPE, scope="production", isolated=False, **kw) -> dict:
     """Pre-tune a shape (offline): sweep the scope, write the winner to the cache.
-    Returns autotune.tune's summary dict."""
+    Returns the autotune summary dict.  Pass ``isolated=True`` to benchmark each
+    candidate in a fresh child process."""
     tier_dirs, filters = autotune.scope_to_dirs_filters(scope)
-    return autotune.tune(M, N, K, tier_dirs=tier_dirs, filters=filters,
-                         dtype=dtype, **kw)
+    tuner = autotune_isolated if isolated else autotune
+    return tuner.tune(M, N, K, tier_dirs=tier_dirs, filters=filters,
+                      dtype=dtype, **kw)
 
 
-def get_tuned_kernel(a, b, *, tune_if_missing=True):
+def get_tuned_kernel(a, b, *, tune_if_missing=True, autotune_isolated=False):
     """Return a callable ``k(a, b) -> c`` running the best-known kernel for this
     shape.  Reuses the cached config/cubin; auto-tunes on a cold shape (unless
-    `tune_if_missing=False`, which then raises)."""
+    `tune_if_missing=False`, which then raises).  ``autotune_isolated=True`` only
+    affects cold-shape tuning; cache hits stay cache hits."""
     M, N, K = _validate(a, b)
     key = kcache.shape_key(M, N, K, DEFAULT_DTYPE, DEFAULT_ARCH)
     if key in _KERNELS:
@@ -171,7 +175,7 @@ def get_tuned_kernel(a, b, *, tune_if_missing=True):
               f"{kcache.cache_root()} and reused in future sessions)",
               file=sys.stderr, flush=True)
         t0 = time.monotonic()
-        summary = tune(M, N, K, on_event=_autotune_progress())
+        summary = tune(M, N, K, isolated=autotune_isolated, on_event=_autotune_progress())
         rec = kcache.best(key)
         if rec is None:
             raise RuntimeError(f"tuning produced no valid config for {key}: "
@@ -184,20 +188,24 @@ def get_tuned_kernel(a, b, *, tune_if_missing=True):
     return fn
 
 
-def get_epilogue_kernel(a, b, epilogue, *, tune_if_missing=True):
+def get_epilogue_kernel(a, b, epilogue, *, tune_if_missing=True,
+                        autotune_isolated=False):
     """Like get_tuned_kernel, but fuses an elementwise epilogue (see
     mmcomposer/epilogue.py) onto each output element.  `epilogue` is a one-in/
     one-out callable (lambda or def) over the epilogue DSL.
 
     The fused kernel is a tuned **variant**: keyed by (shape, epilogue digest), it
     auto-tunes the GEMM *with the epilogue spliced in* on first use (so the winning
-    config is the best one for the fused kernel, not the plain GEMM), and caches it."""
+    config is the best one for the fused kernel, not the plain GEMM), and caches it.
+    Extra-input epilogues use a constrained stable in-process sweep by default;
+    pass ``autotune_isolated=True`` to run the full isolated sweep for debugging."""
     M, N, K = _validate(a, b)
     cuda, tag = _trace(epilogue)             # trace + lower (memoized by object)
     n_extra = epi.n_inputs(epilogue)
     key = kcache.shape_key(M, N, K, DEFAULT_DTYPE, DEFAULT_ARCH, epi=tag)
     if key in _EPI_KERNELS:
         return _EPI_KERNELS[key]
+
     rec = kcache.best(key)
     if rec is None:
         if not tune_if_missing:
@@ -208,7 +216,8 @@ def get_epilogue_kernel(a, b, epilogue, *, tune_if_missing=True):
               f"(one-time per machine; cached to {kcache.cache_root()} and reused later)",
               file=sys.stderr, flush=True)
         t0 = time.monotonic()
-        summary = tune(M, N, K, epilogue=cuda, epi_tag=tag, n_extra=n_extra,
+        summary = tune(M, N, K, isolated=autotune_isolated,
+                       epilogue=cuda, epi_tag=tag, n_extra=n_extra,
                        ref_fn=epi.to_torch(epilogue), on_event=_autotune_progress())
         rec = kcache.best(key)
         if rec is None:
@@ -222,7 +231,8 @@ def get_epilogue_kernel(a, b, epilogue, *, tune_if_missing=True):
     return fn
 
 
-def matmul(a, b, *, out=None, sync=False, tune_if_missing=True, epilogue=None, aux=None):
+def matmul(a, b, *, out=None, sync=False, tune_if_missing=True, epilogue=None,
+           aux=None, autotune_isolated=False):
     """``c = a @ b`` with the best-known MMComposer kernel for this shape
     (auto-tunes + caches on the first call for a new shape).
 
@@ -234,9 +244,12 @@ def matmul(a, b, *, out=None, sync=False, tune_if_missing=True, epilogue=None, a
     to fuse an elementwise op onto each output element, e.g.
     ``mmc.matmul(a, b, epilogue=lambda x: x * sigmoid(x))`` for SiLU.  A multi-arg
     epilogue takes extra same-shape ``[M,N]`` inputs via ``aux=[c, ...]``, e.g.
-    ``mmc.matmul(a, b, epilogue=lambda x, c: x * c, aux=[c])`` for ``(a@b)*c``."""
+    ``mmc.matmul(a, b, epilogue=lambda x, c: x * c, aux=[c])`` for ``(a@b)*c``.
+    Pass ``autotune_isolated=True`` to use process-isolated autotuning on a cold
+    cache miss."""
     if epilogue is None:
-        return get_tuned_kernel(a, b, tune_if_missing=tune_if_missing)(a, b, out, sync=sync)
+        return get_tuned_kernel(a, b, tune_if_missing=tune_if_missing,
+                                autotune_isolated=autotune_isolated)(a, b, out, sync=sync)
     import torch
     aux = tuple(aux or ())
     M, N, _ = _validate(a, b)
@@ -247,7 +260,8 @@ def matmul(a, b, *, out=None, sync=False, tune_if_missing=True, epilogue=None, a
         if t.dtype != torch.bfloat16 or tuple(t.shape) != (M, N) or not t.is_contiguous():
             raise ValueError(f"aux[{i}] must be a contiguous bf16 tensor of shape ({M}, {N})")
     return get_epilogue_kernel(a, b, epilogue,
-                               tune_if_missing=tune_if_missing)(a, b, out, aux=aux, sync=sync)
+                               tune_if_missing=tune_if_missing,
+                               autotune_isolated=autotune_isolated)(a, b, out, aux=aux, sync=sync)
 
 
 def matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate, *, c=None, d=None, sync=False):

@@ -53,6 +53,25 @@ def test_fits_filters_tile_by_shape():
     assert not autotune._fits(tier, {**k, "bk": 64}, 32768, 2304, 800)  # 64 ∤ 800
 
 
+def test_supports_aux_load_uses_stable_aux_family():
+    tier, k = _one_combo()
+
+    k = {**k, "bn": 256, "ns": 5, "nw": 4, "gsm": 1,
+         "tma_store_stages": 1, "single_tmem": 0}
+    assert autotune._supports_aux_load(tier, k, 0)
+    assert not autotune._supports_aux_load(tier, k, 1)
+
+    for ns in (4, 5):
+        safe = {**k, "bn": 256, "ns": ns, "nw": 8, "gsm": 8,
+                "tma_store_stages": 2, "single_tmem": 0}
+        assert autotune._supports_aux_load(tier, safe, 1)
+        assert autotune._supports_aux_load(tier, {**safe, "nw": 16}, 1)
+        assert not autotune._supports_aux_load(tier, {**safe, "tma_store_stages": 1}, 1)
+        assert not autotune._supports_aux_load(tier, {**safe, "bn": 512, "single_tmem": 1}, 1)
+    assert not autotune._supports_aux_load(tier, {**k, "bn": 256, "ns": 6,
+                                                  "tma_store_stages": 2}, 1)
+
+
 def test_render_writes_specialized_kernel():
     import re
     tier, k = _one_combo()

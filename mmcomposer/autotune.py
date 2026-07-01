@@ -35,7 +35,6 @@ from . import leaderboard as lb
 
 CORRECT_TOL = 5e-2
 
-
 # ---------------------------------------------------------------------------
 # CLI helpers
 # ---------------------------------------------------------------------------
@@ -102,6 +101,35 @@ def _record_config(tier, k) -> dict:
     cfg.update(dir=tier["dir"], symbol=tier["symbol"], cluster=tier["cluster"],
                ws=(tier["dir"] != "tier1_baseline"))
     return cfg
+
+
+def _supports_aux_load(tier, k, n_extra: int) -> bool:
+    """Whether this combo is allowed for extra-input epilogues.
+
+    The aux path adds regular GMEM loads in the overlapped TMA-store epilogue.
+    Some production geometries still hit launch failures with those loads, so
+    default in-process aux autotune uses a small benchmark-stable family.  Use
+    the isolated tuner to explore the full production matrix.
+    """
+    if n_extra <= 0:
+        return True
+    if not (tier.get("cluster") and k.get("overlap", 0) and k.get("tma_pipelined", 0)):
+        return True
+    return (
+        tier.get("cluster")
+        and k.get("bm") == 128
+        and k.get("bn") == 256
+        and k.get("bk") == 64
+        and k.get("ns") in (4, 5)
+        and k.get("persistent") == 1
+        and k.get("ld_width", 8) == 8
+        and k.get("overlap") == 1
+        and k.get("split_epilogue") == 0
+        and k.get("l1_no_alloc") == 0
+        and k.get("tma_pipelined") == 1
+        and k.get("tma_store_stages", 2) == 2
+        and k.get("single_tmem", 0) == 0
+    )
 
 
 def scope_to_dirs_filters(scope: str = "production"):
@@ -179,6 +207,8 @@ def tune(M, N, K, *, tier_dirs, filters, dtype="bf16", arch=kcache.DEFAULT_ARCH,
         return shared <= max_smem
 
     combo_list = [(tier, k) for (tier, k) in combo_list if _smem_ok(tier, k)]
+    combo_list = [(tier, k) for (tier, k) in combo_list
+                  if _supports_aux_load(tier, k, n_extra)]
     n_valid = len(combo_list)
     emit("enumerate", n_valid=n_valid)
 

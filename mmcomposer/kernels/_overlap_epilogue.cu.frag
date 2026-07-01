@@ -32,11 +32,20 @@
                     #pragma unroll
                     for (int chunk = 0; chunk < NUM_CHUNKS; chunk++) {
                         float t[LOADS_PER_WARP][8];
+                        #pragma unroll
+                        for (int n = 0; n < LOADS_PER_WARP; n++) {
+                            const int local_n = col_warp * LOADS_PER_WARP + n;
+                            tcgen05_ld_32x32b_x8(trow + (uint32_t)(chunk * STORE_N + local_n * 8), t[n]);
+                        }
+                        tcgen05_wait_ld();
+
 #if MMC_N_EXTRA >= 1
                         // Extra epilogue input (phase 2): load this chunk's tile of
                         // mmc_c0[M,N] directly into registers, at the SAME (row,col)
-                        // each thread's accumulator covers.  Issued *before* the TMEM
-                        // load so the GMEM latency overlaps the load + wait below.
+                        // each thread's accumulator covers.  This intentionally runs
+                        // after tcgen05.wait::ld: issuing ordinary GMEM loads before
+                        // the TMEM load can trip CUDA_ERROR_LAUNCH_FAILED on some
+                        // TMA-store geometries, especially TMA_STORE_STAGES=1.
                         float mmc_c0v[LOADS_PER_WARP][8];
                         #pragma unroll
                         for (int n = 0; n < LOADS_PER_WARP; n++) {
@@ -49,12 +58,6 @@
                             for (int k = 0; k < 8; k++) mmc_c0v[n][k] = __bfloat162float(ch[k]);
                         }
 #endif
-                        #pragma unroll
-                        for (int n = 0; n < LOADS_PER_WARP; n++) {
-                            const int local_n = col_warp * LOADS_PER_WARP + n;
-                            tcgen05_ld_32x32b_x8(trow + (uint32_t)(chunk * STORE_N + local_n * 8), t[n]);
-                        }
-                        tcgen05_wait_ld();
 
                         // The TMEM->reg load above doesn't touch the store buffer, so the
                         // free-store-slot wait below is deferred to just before the buffer write

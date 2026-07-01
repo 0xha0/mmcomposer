@@ -28,7 +28,8 @@ _API = {"matmul", "get_tuned_kernel", "get_epilogue_kernel", "tune",
 __all__ = ["matmul", "get_tuned_kernel", "get_epilogue_kernel", "tune",
            "matmul_swiglu_dual_b_ns6_s2",
            "combos", "compiler", "runtime", "benchmark", "cache", "leaderboard",
-           "autotune", "mvp_core", "codegen", "swiglu", "epilogue"]
+           "autotune", "autotune_isolated", "mvp_core", "codegen", "swiglu",
+           "epilogue"]
 
 
 def __getattr__(name):
@@ -36,4 +37,6 @@ def __getattr__(name):
         return getattr(_importlib.import_module(".mmc", __name__), name)
     if name == "autotune":
         return _importlib.import_module(".autotune", __name__)
+    if name == "autotune_isolated":
+        return _importlib.import_module(".autotune_isolated", __name__)
     raise AttributeError(f"module 'mmcomposer' has no attribute {name!r}")
