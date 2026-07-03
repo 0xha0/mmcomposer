@@ -24,6 +24,7 @@ Requires a CUDA toolkit (`nvcc` on `PATH`) and a GPU build of `torch`; deps
 ```python
 import torch
 import mmcomposer as mmc
+from mmcomposer.epilogue import sigmoid
 
 a = torch.randn(4096, 4096, dtype=torch.bfloat16, device="cuda")
 b = torch.randn(4096, 4096, dtype=torch.bfloat16, device="cuda")
@@ -31,10 +32,7 @@ b = torch.randn(4096, 4096, dtype=torch.bfloat16, device="cuda")
 c = mmc.matmul(a, b)        # first call for a new shape auto-tunes + caches (slow,
                             # once per machine); subsequent calls are fast.
 
-gemm = mmc.get_tuned_kernel(a, b)   # or grab a reusable callable for the shape
-c = gemm(a, b)
-
-mmc.tune(4096, 4096, 4096)  # or pre-tune offline so nothing stalls at runtime
+silu_c = mmc.matmul(a, b, epilogue=lambda x: x * sigmoid(x))
 ```
 
 The first tune for a shape sweeps the valid configs, compiles + benchmarks them
