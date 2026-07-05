@@ -4,18 +4,18 @@
 
 // ── User-tunable constants (the webui substitutes these) ────────────
 constexpr int BM           = 128;
-constexpr int BN           = 256;
+constexpr int BN           = 512;
 constexpr int BK           = 64;
-constexpr int NS           = 3;       // multi-stage SMEM ring depth
+constexpr int NS           = 4;       // multi-stage SMEM ring depth
 constexpr int GROUP_SIZE_M = 8;       // CTA-swizzle chunk (1 = no swizzle)
 constexpr int NUM_WARPS    = 4;       // total warps per CTA
 constexpr int TCGEN05_LD_WIDTH = 8;  // TMEM->reg epilogue load width: 8 or 16 (32-bit elems per lane)
 constexpr int EPILOGUE_OVERLAP = 1;  // 1 = persistent 2-CTA cluster + epilogue/K-loop overlap
 constexpr int EPILOGUE_SPLIT   = 0;  // 1 = split overlapped int4 writeback into two half-BN passes
 constexpr int EPILOGUE_TMA_PIPELINED = 1;  // 1 = chunked staged TMA-store overlap epilogue
-constexpr int SINGLE_TMEM_ACCUM = 0;  // 1 = overlap path synchronizes epilogue drain before reusing one TMEM accumulator
-constexpr int SEGMENTED_PANELS = 0;  // 1 = BN512 segmented panel schedule (SEG = NS k-tiles per segment)
-constexpr int TWO_CTA          = 0;  // 1 = 2-CTA cluster MMA (cta_group::2); 0 = single-CTA
+constexpr int SINGLE_TMEM_ACCUM = 1;  // 1 = overlap path synchronizes epilogue drain before reusing one TMEM accumulator
+constexpr int SEGMENTED_PANELS = 1;  // 1 = BN512 segmented panel schedule (SEG = NS k-tiles per segment)
+constexpr int TWO_CTA          = 1;  // 1 = 2-CTA cluster MMA (cta_group::2); 0 = single-CTA
 
 // ── Derived constants (do not edit) ─────────────────────────────────
 constexpr int MMA_K     = 16;
@@ -34,6 +34,32 @@ constexpr int A_SLOT_BYTES = BM       * BK * BF16_BYTES;       // 16 KB
 constexpr int B_SLOT_BYTES = BN_LOCAL * BK * BF16_BYTES;       // 16 KB
 constexpr int SLOT_BYTES   = A_SLOT_BYTES + B_SLOT_BYTES;      // 32 KB / slot
 
+// ── Segmented panel schedule (BN=512 only) ──────────────────────────
+// Process the K-loop in segments of SEG = NS k-tiles.  Within a segment run
+// ALL of panel 0 (SEG MMAs into TMEM [0,256)), then ALL of panel 1 (SEG MMAs
+// into [256,512)) reusing the segment's resident A tiles (A loaded ONCE — the
+// arithmetic intensity of the baseline is preserved).  Because the two panels
+// are serialized in time, B0 and B1 tiles never coexist: one FIFO B ring is
+// recycled between the two streams instead of holding both (2x NS in the
+// packed layout).  panel 0's accumulator half is fully summed at the global
+// last k, so the epilogue drains [0,256) while the MMA warp still computes
+// the last segment's panel 1 — hiding ~half the single-TMEM reuse delay.
+//
+// SMEM = [ A ring SEG_NA | B ring SEG_NB | C_store ], all 16 KB tiles:
+//   SEG_NA = SEG + 1        segment residency + 1 slot so the next segment's
+//                           first A can prefetch without waiting on panel 1
+//   SEG_NB = budget-fill    B is a pure FIFO stream (1 tile per MMA step);
+//                           its depth is TMA-latency hiding, so give it the
+//                           rest of the 14-tile budget (14 * 16 KB + 1 KB =
+//                           230400 B fits the 227 KB / 232448 B opt-in cap).
+constexpr int SEG             = NS;
+constexpr int SEG_NA          = SEG + 1;
+constexpr int SEG_NB          = 14 - TMA_STORE_STAGES - SEG_NA;
+constexpr int SEG_B_SLOT_BYTES = (BN / 2 / CTA_GROUP) * BK * BF16_BYTES;   // one B panel tile (16 KB)
+constexpr int SEG_RING_BYTES  = SEG_NA * A_SLOT_BYTES + SEG_NB * SEG_B_SLOT_BYTES;
+static_assert(BN == 512, "SEGMENTED_PANELS is the BN=512 two-panel schedule");
+static_assert(SINGLE_TMEM_ACCUM == 1, "SEGMENTED_PANELS drains one shared accumulator");
+static_assert(SEG_NB >= 2, "segmented B ring needs >= 2 slots");
 
 // ── Important: dynamic SMEM is used in TWO non-overlapping phases ──
 //
@@ -90,7 +116,7 @@ __device__ __forceinline__ void tma_2d_load_g2(
     uint32_t smem_dst, const void* tmap, int x, int y, uint32_t mbar
 ) {
     asm volatile(
-        "cp.async.bulk.tensor.2d.shared::cta.global.mbarrier::complete_tx::bytes "
+        "cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.cta_group::2 "
         "[%0], [%1, {%2, %3}], [%4];"
         :: "r"(smem_dst), "l"(tmap), "r"(x), "r"(y), "r"(mbar) : "memory");
 }
@@ -134,11 +160,11 @@ __device__ __forceinline__ uint32_t make_idesc_bf16_cluster(int m, int n) {
 // MMA_ISSUE macro) are identical — TWO_CTA=1 renders byte-for-byte as the
 // cluster tier; TWO_CTA=0 swaps in the single-CTA cta_group::1 instructions.
 __device__ __forceinline__ void tcgen05_alloc_g2(uint32_t smem_dst, uint32_t n_cols) {
-    asm volatile("tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%0], %1;"
+    asm volatile("tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%0], %1;"
                  :: "r"(smem_dst), "r"(n_cols) : "memory");
 }
 __device__ __forceinline__ void tcgen05_dealloc_g2(uint32_t taddr, uint32_t n_cols) {
-    asm volatile("tcgen05.dealloc.cta_group::1.sync.aligned.b32 %0, %1;"
+    asm volatile("tcgen05.dealloc.cta_group::2.sync.aligned.b32 %0, %1;"
                  :: "r"(taddr), "r"(n_cols) : "memory");
 }
 __device__ __forceinline__ void tcgen05_mma_g2(
@@ -148,16 +174,18 @@ __device__ __forceinline__ void tcgen05_mma_g2(
     asm volatile(
         "{\n\t .reg .pred P;\n\t"
         "setp.ne.b32 P, %4, 0;\n\t"
-        "tcgen05.mma.cta_group::1.kind::f16 [%0], %1, %2, %3, P;\n\t"
+        "tcgen05.mma.cta_group::2.kind::f16 [%0], %1, %2, %3, P;\n\t"
         "}"
         :: "r"(d_tmem), "l"(a_desc), "l"(b_desc), "r"(idesc),
            "r"((uint32_t)enable_d) : "memory");
 }
-// Single-CTA: one arrive, no multicast (cta_mask ignored).
+// Multicast commit: arrives on the supplied mbar in every CTA whose bit is set in
+// the mask.  cta_mask = (1 << CTA_GROUP) - 1 = 0b11 → both CTAs.
 __device__ __forceinline__ void signal_on_mma_completion(uint32_t smem_bar, int16_t cta_mask) {
-    (void)cta_mask;
-    asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];"
-                 :: "r"(smem_bar) : "memory");
+    asm volatile(
+        "tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 "
+        "[%0], %1;"
+        :: "r"(smem_bar), "h"(cta_mask) : "memory");
 }
 
 __device__ __forceinline__ void tcgen05_fence_after_thread_sync() {
@@ -283,7 +311,8 @@ __device__ __forceinline__ void matmul_cluster_impl(
     // bid (the cluster id derived from blockIdx.x / CTA_GROUP) is what
     // we'd normally call the grid coordinate; the cluster handles a
     // 2*BM × BN output tile.
-    const int cta_rank = 0;   // single-CTA: this CTA is rank 0
+    int cta_rank;
+    asm volatile("mov.b32 %0, %%cluster_ctarank;" : "=r"(cta_rank));
 
     // Tile coords (the GSM chunked-walk swizzle) are computed PER-TILE
     // inside each path's persistent loop below — both the overlap and the
@@ -293,15 +322,20 @@ __device__ __forceinline__ void matmul_cluster_impl(
     // ── SMEM (per CTA — B is now half-width) ────────────────────────
     extern __shared__ __align__(1024) char smem[];
     const uint32_t SMEM_BASE = (uint32_t)__cvta_generic_to_shared(smem);
+    // Split rings: [ A ring SEG_NA | B ring SEG_NB | C_store ].  Each ring has
+    // its own data_ready / buffer_free mbarriers — A is freed by panel 1 (the
+    // LAST reader, one segment after panel 0), B by whichever panel consumes it.
     auto A_base = [SMEM_BASE](int s) -> uint32_t {
-        return SMEM_BASE + s * SLOT_BYTES;
+        return SMEM_BASE + s * A_SLOT_BYTES;
     };
     auto B_base = [SMEM_BASE](int s) -> uint32_t {
-        return SMEM_BASE + s * SLOT_BYTES + A_SLOT_BYTES;
+        return SMEM_BASE + SEG_NA * A_SLOT_BYTES + s * SEG_B_SLOT_BYTES;
     };
 
-    __shared__ uint64_t mbar_compute_data_ready[NS];
-    __shared__ uint64_t mbar_compute_buffer_free[NS];
+    __shared__ uint64_t mbar_a_data_ready[SEG_NA];
+    __shared__ uint64_t mbar_a_buffer_free[SEG_NA];
+    __shared__ uint64_t mbar_b_data_ready[SEG_NB];
+    __shared__ uint64_t mbar_b_buffer_free[SEG_NB];
     __shared__ uint64_t all_mmas_done;
     __shared__ uint32_t tmem_addr_holder[1];
 
@@ -318,18 +352,24 @@ __device__ __forceinline__ void matmul_cluster_impl(
         // Pipelined TMA-store mode keeps the K-loop ring intact and reserves
         // compact 128B-swizzled SMEM buffers for chunked TMA stores.
         constexpr int STORE_BUF_BYTES = BM * STORE_N * BF16_BYTES;
-        const uint32_t STORE_SMEM_BASE = SMEM_BASE + NS * SLOT_BYTES;
-        auto C_store = reinterpret_cast<__nv_bfloat16*>(smem + NS * SLOT_BYTES);
+        const uint32_t STORE_SMEM_BASE = SMEM_BASE + SEG_RING_BYTES;
+        auto C_store = reinterpret_cast<__nv_bfloat16*>(smem + SEG_RING_BYTES);
 
         if (warp_id == 0) {
-            tcgen05_alloc_g2((uint32_t)__cvta_generic_to_shared(tmem_addr_holder), 2 * BN);
+            tcgen05_alloc_g2((uint32_t)__cvta_generic_to_shared(tmem_addr_holder), BN);
         }
         if (warp_id == 0 && elect_sync()) {
             #pragma unroll
-            for (int s = 0; s < NS; s++) {
-                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[s]), CTA_GROUP);
-                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[s]), 1);
-                mbarrier_arrive_no_tx((uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[s]));
+            for (int s = 0; s < SEG_NA; s++) {
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_a_data_ready[s]), CTA_GROUP);
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_a_buffer_free[s]), 1);
+                mbarrier_arrive_no_tx((uint32_t)__cvta_generic_to_shared(&mbar_a_buffer_free[s]));
+            }
+            #pragma unroll
+            for (int s = 0; s < SEG_NB; s++) {
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_b_data_ready[s]), CTA_GROUP);
+                mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_b_buffer_free[s]), 1);
+                mbarrier_arrive_no_tx((uint32_t)__cvta_generic_to_shared(&mbar_b_buffer_free[s]));
             }
             #pragma unroll
             for (int b = 0; b < 2; b++) {
@@ -342,11 +382,15 @@ __device__ __forceinline__ void matmul_cluster_impl(
             asm volatile("fence.mbarrier_init.release.cluster;");
         }
 
-        __syncthreads();
+        asm volatile("barrier.cluster.arrive.release.aligned;");
+        asm volatile("barrier.cluster.wait.acquire.aligned;");
 
         const uint32_t taddr = tmem_addr_holder[0];
-        const uint32_t idesc = make_idesc_bf16_cluster(CTA_GROUP * BM, BN);
+        constexpr int BN_PANEL = 256;
+        constexpr int BN_PANEL_LOCAL = BN_PANEL / CTA_GROUP;
+        const uint32_t idesc = make_idesc_bf16_cluster(CTA_GROUP * BM, BN_PANEL);
         const int num_k = K / BK;
+        const int num_seg = (num_k + SEG - 1) / SEG;   // last segment may be partial
         constexpr int16_t cta_mask = (1 << CTA_GROUP) - 1;
 
         const int grid_m_clusters = M / (CTA_GROUP * BM);
@@ -372,53 +416,125 @@ __device__ __forceinline__ void matmul_cluster_impl(
         };
 
         if (warp_id == 0 && elect_sync()) {
-            uint32_t compute_buffer_free_phase[NS] = {};
-            long gk = 0;
+            // Segmented loader.  Per segment: stream A[k] + B0[k] (the panel-0
+            // phase), then B1[k] (the panel-1 phase) into B-ring slots recycled
+            // from B0.  Both rings are FIFOs consumed in exactly this order by
+            // the MMA warp, so slot indices are just running counters mod depth.
+            uint32_t a_buffer_free_phase[SEG_NA] = {};
+            uint32_t b_buffer_free_phase[SEG_NB] = {};
+            long ga = 0, gb = 0;
             for (int ti = 0; ti < num_my; ti++) {
                 int base_m, base_n, local_m, local_n;
                 map_off(ti, base_m, base_n, local_m, local_n);
-                for (int k = 0; k < num_k; k++) {
-                    int slot = gk % NS;
-                    uint32_t compute_buffer_free_addr =
-                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
-                    uint32_t compute_data_ready_cta0 =
-                        ((uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[slot])) & 0xFEFFFFFFu;
-                    wait_phase(compute_buffer_free_addr, compute_buffer_free_phase[slot]);
-                    tma_2d_load_g2(A_base(slot), A_tmap, k * BK, local_m, compute_data_ready_cta0);
-                    #pragma unroll
-                    for (int n = 0; n < BN_LOCAL; n += 64) {
-                        tma_2d_load_g2(B_base(slot) + n * BK * BF16_BYTES,
-                                       B_tmap, local_n + n, k * BK, compute_data_ready_cta0);
+                for (int seg = 0; seg < num_seg; seg++) {
+                    const int base_k = seg * SEG;
+                    const int seg_len = min(SEG, num_k - base_k);
+                    for (int j = 0; j < seg_len; j++) {      // panel-0 stream: A[k] + B0[k]
+                        const int k = base_k + j;
+                        const int as = (int)(ga % SEG_NA);
+                        uint32_t a_buffer_free_addr =
+                            (uint32_t)__cvta_generic_to_shared(&mbar_a_buffer_free[as]);
+                        uint32_t a_data_ready_cta0 =
+                            ((uint32_t)__cvta_generic_to_shared(&mbar_a_data_ready[as])) & 0xFEFFFFFFu;
+                        wait_phase(a_buffer_free_addr, a_buffer_free_phase[as]);
+                        tma_2d_load_g2(A_base(as), A_tmap, k * BK, local_m, a_data_ready_cta0);
+                        signal_on_bytes_loaded(a_data_ready_cta0, A_SLOT_BYTES);
+                        a_buffer_free_phase[as] ^= 1;
+                        ga++;
+
+                        const int bs = (int)(gb % SEG_NB);
+                        uint32_t b_buffer_free_addr =
+                            (uint32_t)__cvta_generic_to_shared(&mbar_b_buffer_free[bs]);
+                        uint32_t b_data_ready_cta0 =
+                            ((uint32_t)__cvta_generic_to_shared(&mbar_b_data_ready[bs])) & 0xFEFFFFFFu;
+                        wait_phase(b_buffer_free_addr, b_buffer_free_phase[bs]);
+                        #pragma unroll
+                        for (int n = 0; n < BN_PANEL_LOCAL; n += 64)
+                            tma_2d_load_g2(B_base(bs) + n * BK * BF16_BYTES, B_tmap,
+                                           base_n + 0 * BN_PANEL + cta_rank * BN_PANEL_LOCAL + n,
+                                           k * BK, b_data_ready_cta0);
+                        signal_on_bytes_loaded(b_data_ready_cta0, SEG_B_SLOT_BYTES);
+                        b_buffer_free_phase[bs] ^= 1;
+                        gb++;
                     }
-                    signal_on_bytes_loaded(compute_data_ready_cta0, SLOT_BYTES);
-                    compute_buffer_free_phase[slot] ^= 1;
-                    gk++;
+                    for (int j = 0; j < seg_len; j++) {      // panel-1 stream: B1[k]
+                        const int k = base_k + j;
+                        const int bs = (int)(gb % SEG_NB);
+                        uint32_t b_buffer_free_addr =
+                            (uint32_t)__cvta_generic_to_shared(&mbar_b_buffer_free[bs]);
+                        uint32_t b_data_ready_cta0 =
+                            ((uint32_t)__cvta_generic_to_shared(&mbar_b_data_ready[bs])) & 0xFEFFFFFFu;
+                        wait_phase(b_buffer_free_addr, b_buffer_free_phase[bs]);
+                        #pragma unroll
+                        for (int n = 0; n < BN_PANEL_LOCAL; n += 64)
+                            tma_2d_load_g2(B_base(bs) + n * BK * BF16_BYTES, B_tmap,
+                                           base_n + 1 * BN_PANEL + cta_rank * BN_PANEL_LOCAL + n,
+                                           k * BK, b_data_ready_cta0);
+                        signal_on_bytes_loaded(b_data_ready_cta0, SEG_B_SLOT_BYTES);
+                        b_buffer_free_phase[bs] ^= 1;
+                        gb++;
+                    }
                 }
             }
         } else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {
-            uint32_t compute_data_ready_phase[NS] = {};
-            uint32_t tmem_buffer_free_phase[2] = {};
-            long gk = 0;
+            // Segmented MMA.  Per segment: panel 0 (seg_len MMAs into [0,256),
+            // consuming A[k]+B0[k], freeing each B0 slot), then panel 1 (seg_len
+            // MMAs into [256,512) reusing the resident A[k], freeing each B1
+            // slot AND the A slot — panel 1 is A's last reader).
+            // tmem_data_ready[0] fires at the GLOBAL last k (panel 0 fully
+            // accumulated) so the epilogue drains [0,256) concurrently with the
+            // last segment's panel-1 MMAs; tmem_data_ready[1] fires after them.
+            uint32_t a_data_ready_phase[SEG_NA] = {};
+            uint32_t b_data_ready_phase[SEG_NB] = {};
+            uint32_t tmem_buffer_free_phase = 0;
+            long ga = 0, gb = 0;
             for (int ti = 0; ti < num_my; ti++) {
-                int buf = ti & 1;
-                uint32_t d_tmem = taddr + buf * BN;
-                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[buf]),
-                                    tmem_buffer_free_phase[buf]);
-                tmem_buffer_free_phase[buf] ^= 1;
-                for (int k = 0; k < num_k; k++) {
-                    int slot = gk % NS;
-                    uint32_t compute_data_ready_addr =
-                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[slot]);
-                    uint32_t compute_buffer_free_addr =
-                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
-                    wait_phase(compute_data_ready_addr, compute_data_ready_phase[slot]);
-                    tcgen05_fence_after_thread_sync();
-                    issue_mma_chain(d_tmem, A_base(slot), B_base(slot), idesc, /*first_k_tile=*/ k == 0);
-                    signal_on_mma_completion(compute_buffer_free_addr, cta_mask);
-                    compute_data_ready_phase[slot] ^= 1;
-                    gk++;
+                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[0]),
+                           tmem_buffer_free_phase);
+                tmem_buffer_free_phase ^= 1;
+                for (int seg = 0; seg < num_seg; seg++) {
+                    const int base_k = seg * SEG;
+                    const int seg_len = min(SEG, num_k - base_k);
+                    for (int j = 0; j < seg_len; j++) {      // panel 0 -> [0,256)
+                        const int k = base_k + j;
+                        const int as = (int)(ga % SEG_NA);
+                        const int bs = (int)(gb % SEG_NB);
+                        wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_a_data_ready[as]),
+                                   a_data_ready_phase[as]);
+                        wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_b_data_ready[bs]),
+                                   b_data_ready_phase[bs]);
+                        tcgen05_fence_after_thread_sync();
+                        issue_mma_chain(taddr, A_base(as), B_base(bs), idesc,
+                                        /*first_k_tile=*/ k == 0);
+                        a_data_ready_phase[as] ^= 1;
+                        b_data_ready_phase[bs] ^= 1;
+                        signal_on_mma_completion(
+                            (uint32_t)__cvta_generic_to_shared(&mbar_b_buffer_free[bs]), cta_mask);
+                        ga++;
+                        gb++;
+                        if (k == num_k - 1)                   // panel 0 complete -> drain may start
+                            signal_on_mma_completion(
+                                (uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[0]), cta_mask);
+                    }
+                    for (int j = 0; j < seg_len; j++) {      // panel 1 -> [256,512)
+                        const int k = base_k + j;
+                        const int as = (int)((ti * (long)num_k + k) % SEG_NA);
+                        const int bs = (int)(gb % SEG_NB);
+                        wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_b_data_ready[bs]),
+                                   b_data_ready_phase[bs]);
+                        tcgen05_fence_after_thread_sync();
+                        issue_mma_chain(taddr + BN_PANEL, A_base(as), B_base(bs), idesc,
+                                        /*first_k_tile=*/ k == 0);
+                        b_data_ready_phase[bs] ^= 1;
+                        signal_on_mma_completion(
+                            (uint32_t)__cvta_generic_to_shared(&mbar_b_buffer_free[bs]), cta_mask);
+                        signal_on_mma_completion(
+                            (uint32_t)__cvta_generic_to_shared(&mbar_a_buffer_free[as]), cta_mask);
+                        gb++;
+                    }
                 }
-                signal_on_mma_completion((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[buf]), cta_mask);
+                signal_on_mma_completion(
+                    (uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[1]), cta_mask);
             }
         } else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {
             // Contract for the shared overlap-drain fragment: cluster tier writes
@@ -438,16 +554,24 @@ __device__ __forceinline__ void matmul_cluster_impl(
             const int col_base = col_warp * COLS_PER_WARP;
             const int etid = ew * 32 + lane;
             uint32_t full[2] = {};
+            // Two-pass drain: panel 0's [0,256) is fully accumulated (and its
+            // tmem_data_ready[0] fired) while the MMA warp still computes the
+            // last segment's panel 1 — pass 0 overlaps that compute.  The one
+            // TMEM accumulator is released after pass 1's last chunk (the
+            // fragment keys this off `pass`).  store_stage is continuous across
+            // the two passes (8 STORE_N chunks per tile).
             for (int ti = 0; ti < num_my; ti++) {
                 int base_m, base_n, local_m, local_n;
-                int buf = ti & 1;
+                const int buf = 0;
                 map_off(ti, base_m, base_n, local_m, local_n);
-                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[buf]), full[buf]);
-                full[buf] ^= 1;
-                tcgen05_fence_after_thread_sync();
-                const uint32_t trow =
-                    (taddr + buf * BN) + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
-                constexpr int LDW = TCGEN05_LD_WIDTH;
+                int store_stage = 0;
+                for (int pass = 0; pass < 2; pass++) {
+                    wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[pass]), full[pass]);
+                    full[pass] ^= 1;
+                    tcgen05_fence_after_thread_sync();
+                    const uint32_t trow =
+                        (taddr + pass * BN_PANEL) + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
+                    constexpr int LDW = TCGEN05_LD_WIDTH;
 
                 // ── Overlap epilogue drain (TMEM → SMEM → GMEM), shared ─────
                 // Spliced into the overlap epilogue-warp loop of every warp-spec
@@ -472,12 +596,16 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 {
                     constexpr int LOADS_PER_CHUNK = STORE_N / 8;
                     constexpr int LOADS_PER_WARP = LOADS_PER_CHUNK / COL_GROUPS;
-                    constexpr int NUM_CHUNKS = BN / STORE_N;
+                    // Segmented panels: this splice runs once per `pass` (one
+                    // 256-wide panel), inside the kernel's two-pass drain loop.
+                    // `pass` and `store_stage` are supplied by that loop; the
+                    // TMEM release keys off pass 1's last chunk.
+                    constexpr int NUM_CHUNKS = BN_PANEL / STORE_N;
                     static_assert(STORE_N == 64, "pipelined TMA store assumes STORE_N=64");
-                    static_assert(NUM_CHUNKS * STORE_N == BN, "BN must divide into STORE_N chunks");
+                    static_assert(NUM_CHUNKS * STORE_N == BN_PANEL,
+                                  "BN_PANEL must divide into STORE_N chunks");
                     static_assert(LOADS_PER_WARP * COL_GROUPS == LOADS_PER_CHUNK,
                                   "STORE_N/8 chunks must divide across column warp groups");
-                    int store_stage = 0;
 
                     #pragma unroll
                     for (int chunk = 0; chunk < NUM_CHUNKS; chunk++) {
@@ -493,16 +621,20 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         // The TMEM->reg load above doesn't touch the store buffer, so the
                         // free-store-slot wait below is deferred to just before the buffer write
                         // (and stays before the bar.sync so every warp observes the ew==0 wait).
-                        if (chunk == NUM_CHUNKS - 1) {
+                        // Release the one shared accumulator only after the LAST
+                        // panel's last chunk (both [0,256) and [256,512) drained).
+                        if ((pass == 1) && (chunk == NUM_CHUNKS - 1))
                             tcgen05_fence_before_thread_sync();
-                            if (ew == 0 && elect_sync())
-                                signal_sync(buf);
-                        }
 
                         if (ew == 0)
                             tma_wait_group<TMA_STORE_STAGES - 1>();
 
                         asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
+
+                        if ((pass == 1) && (chunk == NUM_CHUNKS - 1)) {
+                            if (ew == 0 && elect_sync())
+                                signal_sync(buf);
+                        }
 
                         #pragma unroll
                         for (int n = 0; n < LOADS_PER_WARP; n++) {
@@ -524,12 +656,13 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         if (ew == 0 && elect_sync()) {
                             const uint32_t src = STORE_SMEM_BASE + store_stage * STORE_BUF_BYTES;
                             tma_2d_store(C_tmap_ptr, src,
-                                         EPI_OUT_COL_BASE + chunk * STORE_N, EPI_OUT_ROW);
+                                         EPI_OUT_COL_BASE + pass * BN_PANEL + chunk * STORE_N, EPI_OUT_ROW);
                             tma_commit_group();
                         }
 
                         store_stage ^= 1;
                     }
+                }
                 }
             }
             if (ew == 0)
@@ -542,7 +675,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
         __syncthreads();
         if (warp_id == 0 && elect_sync()) {
-            tcgen05_dealloc_g2(taddr, 2 * BN);
+            tcgen05_dealloc_g2(taddr, BN);
         }
         return;
     }
@@ -551,7 +684,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
 // ── Single entry symbol — NS and GROUP_SIZE_M are baked in from the
 // constexpr knobs at the top of the file (the webui substitutes them).
-extern "C" __global__ __launch_bounds__(LAUNCH_THREADS, 1)
+extern "C" __global__ __cluster_dims__(CTA_GROUP, 1, 1) __launch_bounds__(LAUNCH_THREADS, 1)
 void matmul_cluster(
     const __grid_constant__ CUtensorMap A_tmap,
     const __grid_constant__ CUtensorMap B_tmap,

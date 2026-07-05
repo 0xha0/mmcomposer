@@ -14,6 +14,7 @@ constexpr int EPILOGUE_OVERLAP = 1;  // 1 = persistent 2-CTA cluster + epilogue/
 constexpr int EPILOGUE_SPLIT   = 0;  // 1 = split overlapped int4 writeback into two half-BN passes
 constexpr int EPILOGUE_TMA_PIPELINED = 1;  // 1 = chunked staged TMA-store overlap epilogue
 constexpr int SINGLE_TMEM_ACCUM = 0;  // 1 = overlap path synchronizes epilogue drain before reusing one TMEM accumulator
+constexpr int SEGMENTED_PANELS = 0;  // 1 = BN512 segmented panel schedule (SEG = NS k-tiles per segment)
 constexpr int TWO_CTA          = 1;  // 1 = 2-CTA cluster MMA (cta_group::2); 0 = single-CTA
 
 // ── Derived constants (do not edit) ─────────────────────────────────
@@ -32,6 +33,7 @@ constexpr int TMA_STORE_STAGES = 2;                  // TMA-store SMEM buffers
 constexpr int A_SLOT_BYTES = BM       * BK * BF16_BYTES;       // 16 KB
 constexpr int B_SLOT_BYTES = BN_LOCAL * BK * BF16_BYTES;       // 16 KB
 constexpr int SLOT_BYTES   = A_SLOT_BYTES + B_SLOT_BYTES;      // 32 KB / slot
+
 
 // ── Important: dynamic SMEM is used in TWO non-overlapping phases ──
 //
@@ -65,6 +67,9 @@ constexpr int LAUNCH_THREADS = (NUM_WARPS + 4) * WARP_SIZE;
 
 
 // ── helpers ─────────────────────────────────────────────────────────
+// ---- elementwise epilogue (EDL): per-element fp32 map before bf16 store ----
+__device__ __forceinline__ float mmc_epi(float x) { return x; }
+
 __device__ __forceinline__ bool elect_sync() {
     uint32_t pred = 0;
     asm volatile(
@@ -488,6 +493,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         }
                         tcgen05_wait_ld();
 
+
                         // The TMEM->reg load above doesn't touch the store buffer, so the
                         // free-store-slot wait below is deferred to just before the buffer write
                         // (and stays before the bar.sync so every warp observes the ew==0 wait).
@@ -507,7 +513,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                             __nv_bfloat162 pk[4];
                             #pragma unroll
                             for (int i = 0; i < 4; i++)
-                                pk[i] = __floats2bfloat162_rn(t[n][2 * i], t[n][2 * i + 1]);
+                                pk[i] = __floats2bfloat162_rn(mmc_epi(t[n][2 * i]), mmc_epi(t[n][2 * i + 1]));
                             const int local_n = col_warp * LOADS_PER_WARP + n;
                             const int swizzled_n = local_n ^ (my_row & 7);
                             __nv_bfloat16* write_ptr =
@@ -554,7 +560,9 @@ void matmul_cluster(
     const __grid_constant__ CUtensorMap A_tmap,
     const __grid_constant__ CUtensorMap B_tmap,
     const __grid_constant__ CUtensorMap C_tmap,
-    __nv_bfloat16* C_ptr, int M, int N, int K)
+    __nv_bfloat16* C_ptr, int M, int N, int K
+)
 {
-    matmul_cluster_impl(&A_tmap, &B_tmap, &C_tmap, C_ptr, M, N, K);
+    matmul_cluster_impl(&A_tmap, &B_tmap, &C_tmap, C_ptr, M, N, K
+    );
 }
