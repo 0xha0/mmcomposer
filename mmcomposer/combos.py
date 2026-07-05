@@ -32,6 +32,7 @@ def all_combos(tier_dirs, filters=None):
     tma_store_stage_filter = filters.get("tma_store_stages")
     single_filter = filters.get("single_tmem")
     single_tmem_policy = filters.get("single_tmem_policy")
+    seg_filter = filters.get("seg_panels")
     # A skeleton dir may back >1 tier: the warp-spec single-CTA and 2-CTA
     # cluster tiers share one dir, distinguished by the TWO_CTA knob.  Sweep
     # every (ms_ws, two_cta) arm registered for each requested dir.
@@ -63,23 +64,29 @@ def all_combos(tier_dirs, filters=None):
         )
         single_default = mc.SINGLE_TMEM_ACCUM_OPTS if tier.get("persistent_ok") else [0]
         single_opts = single_filter if single_filter is not None else single_default
-        for bm, bn, bk, ns, gsm, nw, pers, ldw, ov, sp, l1, tma, single_tmem in itertools.product(
+        # SEGMENTED_PANELS is a BN=512 overlap-path schedule; only the
+        # persistent-capable tiers can generate it (validity prunes the rest).
+        seg_default = mc.SEG_PANELS_OPTS if tier.get("persistent_ok") else [0]
+        seg_opts = seg_filter if seg_filter is not None else seg_default
+        for bm, bn, bk, ns, gsm, nw, pers, ldw, ov, sp, l1, tma, single_tmem, seg in itertools.product(
             mc.BM_OPTS, bn_list, mc.BK_OPTS, ns_list, gsm_list, nw_list,
             pers_opts, ld_list, ov_opts, sp_opts,
-            l1_list, tma_opts, single_opts
+            l1_list, tma_opts, single_opts, seg_opts
         ):
             if single_tmem_policy == "bn512-only":
                 if bn == 512 and single_tmem != 1:
                     continue
                 if bn != 512 and single_tmem != 0:
                     continue
+            if seg and bn != 512:
+                continue   # cheap pre-prune; validate_config also rejects these
             stage_opts = tma_store_stage_opts if tma else [2]
             for tma_store_stages in stage_opts:
                 yield tier, dict(bm=bm, bn=bn, bk=bk, ns=ns, gsm=gsm, nw=nw,
                                  persistent=pers, ld_width=ldw, overlap=ov,
                                  split_epilogue=sp, l1_no_alloc=l1,
                                  tma_pipelined=tma, tma_store_stages=tma_store_stages,
-                                 single_tmem=single_tmem)
+                                 single_tmem=single_tmem, seg_panels=seg)
 
 
 def is_valid(tier, k) -> bool:
@@ -95,7 +102,8 @@ def is_valid(tier, k) -> bool:
         l1_no_alloc=k.get("l1_no_alloc", 0),
         tma_pipelined=k.get("tma_pipelined", 0),
         tma_store_stages=k.get("tma_store_stages", 2),
-        single_tmem=k.get("single_tmem", 0))
+        single_tmem=k.get("single_tmem", 0),
+        seg_panels=k.get("seg_panels", 0))
     return not warnings
 
 
