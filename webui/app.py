@@ -152,9 +152,11 @@ with st.sidebar:
         "Segmented panel schedule (BN512)", value=_default_on("seg_panels"),
         help="Process K in segments of NS k-tiles: all of panel 0, then all of "
              "panel 1 reusing the segment's resident A (loaded once).  Panel 0's "
-             "drain overlaps the last segment's panel-1 MMAs, recovering part of "
-             "the single-TMEM reuse delay BN512 otherwise exposes.  Requires "
-             "BN=512 + the pipelined-TMA overlap bundle + Single-TMEM sync (above).")
+             "drain overlaps the last segment's panel-1 MMAs and panel 1's drain "
+             "overlaps the next tile's first panel-0 segment (per-half TMEM "
+             "release) — hiding the single-TMEM reuse delay BN512 otherwise "
+             "exposes.  Requires BN=512 + the pipelined-TMA overlap bundle + "
+             "Single-TMEM sync (above).")
     if seg_panels and not single_tmem:
         single_tmem = True
         st.caption("ℹ️ Segmented panel schedule enabled **Single-TMEM accumulator "

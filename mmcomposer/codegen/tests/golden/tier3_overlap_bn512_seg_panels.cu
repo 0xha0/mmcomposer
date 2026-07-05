@@ -486,12 +486,15 @@ __device__ __forceinline__ void matmul_cluster_impl(
             // last segment's panel-1 MMAs; tmem_data_ready[1] fires after them.
             uint32_t a_data_ready_phase[SEG_NA] = {};
             uint32_t b_data_ready_phase[SEG_NB] = {};
-            uint32_t tmem_buffer_free_phase = 0;
+            uint32_t tmem_buffer_free_phase[2] = {};
             long ga = 0, gb = 0;
             for (int ti = 0; ti < num_my; ti++) {
+                // [0,256) is free as soon as the previous tile's pass-0 drain
+                // finished — typically during its last panel-1 segment, so this
+                // wait is usually satisfied already.
                 wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[0]),
-                           tmem_buffer_free_phase);
-                tmem_buffer_free_phase ^= 1;
+                           tmem_buffer_free_phase[0]);
+                tmem_buffer_free_phase[0] ^= 1;
                 for (int seg = 0; seg < num_seg; seg++) {
                     const int base_k = seg * SEG;
                     const int seg_len = min(SEG, num_k - base_k);
@@ -515,6 +518,15 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         if (k == num_k - 1)                   // panel 0 complete -> drain may start
                             signal_on_mma_completion(
                                 (uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[0]), cta_mask);
+                    }
+                    if (seg == 0) {
+                        // [256,512) may still be draining the PREVIOUS tile's
+                        // panel 1 (its drain overlaps this tile's first panel-0
+                        // segment above).  Gate this tile's first panel-1 MMA on
+                        // that drain's completion.
+                        wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[1]),
+                                   tmem_buffer_free_phase[1]);
+                        tmem_buffer_free_phase[1] ^= 1;
                     }
                     for (int j = 0; j < seg_len; j++) {      // panel 1 -> [256,512)
                         const int k = base_k + j;
@@ -556,13 +568,13 @@ __device__ __forceinline__ void matmul_cluster_impl(
             uint32_t full[2] = {};
             // Two-pass drain: panel 0's [0,256) is fully accumulated (and its
             // tmem_data_ready[0] fired) while the MMA warp still computes the
-            // last segment's panel 1 — pass 0 overlaps that compute.  The one
-            // TMEM accumulator is released after pass 1's last chunk (the
-            // fragment keys this off `pass`).  store_stage is continuous across
-            // the two passes (8 STORE_N chunks per tile).
+            // last segment's panel 1 — pass 0 overlaps that compute.  Each half
+            // is released as soon as ITS drain completes (the fragment fires
+            // signal_sync(pass)), so pass 1's drain overlaps the NEXT tile's
+            // first panel-0 segment.  store_stage is continuous across the two
+            // passes (8 STORE_N chunks per tile).
             for (int ti = 0; ti < num_my; ti++) {
                 int base_m, base_n, local_m, local_n;
-                const int buf = 0;
                 map_off(ti, base_m, base_n, local_m, local_n);
                 int store_stage = 0;
                 for (int pass = 0; pass < 2; pass++) {
@@ -621,9 +633,14 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         // The TMEM->reg load above doesn't touch the store buffer, so the
                         // free-store-slot wait below is deferred to just before the buffer write
                         // (and stays before the bar.sync so every warp observes the ew==0 wait).
-                        // Release the one shared accumulator only after the LAST
-                        // panel's last chunk (both [0,256) and [256,512) drained).
-                        if ((pass == 1) && (chunk == NUM_CHUNKS - 1))
+                        // Split release: each 256-col half is freed as soon as ITS
+                        // drain completes — [0,256) after pass 0 (the next tile's
+                        // panel 0 may start accumulating there while pass 1 is
+                        // still draining), [256,512) after pass 1.  This hides
+                        // panel 1's drain behind the next tile's first-segment
+                        // panel-0 MMAs, on top of panel 0's drain already hiding
+                        // behind this tile's last-segment panel-1 MMAs.
+                        if (chunk == NUM_CHUNKS - 1)
                             tcgen05_fence_before_thread_sync();
 
                         if (ew == 0)
@@ -631,9 +648,9 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
                         asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
 
-                        if ((pass == 1) && (chunk == NUM_CHUNKS - 1)) {
+                        if (chunk == NUM_CHUNKS - 1) {
                             if (ew == 0 && elect_sync())
-                                signal_sync(buf);
+                                signal_sync(pass);
                         }
 
                         #pragma unroll

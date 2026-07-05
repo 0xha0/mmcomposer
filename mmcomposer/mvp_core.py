@@ -111,14 +111,14 @@ TMA_STORE_STAGES_OPTS = [1, 2, 3, 4]
 SINGLE_TMEM_ACCUM_OPTS = [0, 1]
 # BN512 segmented panel schedule: process K in segments of SEG = NS k-tiles,
 # running all of panel 0 then all of panel 1 per segment (A resident for the
-# segment, loaded once; one recycled FIFO B ring).  Panel 0's accumulator half
-# finishes at the global last k, so its drain overlaps the last segment's
-# panel-1 MMAs — recovering part of the single-TMEM reuse delay that BN512
-# otherwise exposes (measured: >= +0.5% everywhere vs BN512 NS4/ts2, up to
-# +2.9% mid-K and +6..7% on epilogue-bound low-K shapes; never a loss).
-# Requires the BN512 bundle (cluster+persistent+overlap+tma_pipelined) and
-# SINGLE_TMEM_ACCUM=1 — enforced by validate_config, so enumeration only pairs
-# it with single_tmem on.
+# segment, loaded once; one recycled FIFO B ring).  Both halves of BN512's
+# single-TMEM reuse delay are hidden: panel 0's drain overlaps the last
+# segment's panel-1 MMAs, and the per-half TMEM release lets panel 1's drain
+# overlap the NEXT tile's first panel-0 segment.  Measured vs BN512 NS4/ts2
+# (exclusive B200 node): +1.6% at 8192^3, +6% at K=2048, up to +16% on
+# epilogue-bound low-K shapes; parity at worst.  Requires the BN512 bundle
+# (cluster+persistent+overlap+tma_pipelined) and SINGLE_TMEM_ACCUM=1 —
+# enforced by validate_config, so enumeration only pairs it with single_tmem on.
 SEG_PANELS_OPTS = [0, 1]
 # Shared on/off labels for non-Streamlit callers.  The main Streamlit UI
 # presents these binary knobs as toggles.

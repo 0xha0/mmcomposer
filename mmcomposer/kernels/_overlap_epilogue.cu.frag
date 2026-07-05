@@ -81,9 +81,14 @@
                         // free-store-slot wait below is deferred to just before the buffer write
                         // (and stays before the bar.sync so every warp observes the ew==0 wait).
 #if SEGMENTED_PANELS
-                        // Release the one shared accumulator only after the LAST
-                        // panel's last chunk (both [0,256) and [256,512) drained).
-                        if ((pass == 1) && (chunk == NUM_CHUNKS - 1))
+                        // Split release: each 256-col half is freed as soon as ITS
+                        // drain completes — [0,256) after pass 0 (the next tile's
+                        // panel 0 may start accumulating there while pass 1 is
+                        // still draining), [256,512) after pass 1.  This hides
+                        // panel 1's drain behind the next tile's first-segment
+                        // panel-0 MMAs, on top of panel 0's drain already hiding
+                        // behind this tile's last-segment panel-1 MMAs.
+                        if (chunk == NUM_CHUNKS - 1)
                             tcgen05_fence_before_thread_sync();
 
                         if (ew == 0)
@@ -91,9 +96,9 @@
 
                         asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
 
-                        if ((pass == 1) && (chunk == NUM_CHUNKS - 1)) {
+                        if (chunk == NUM_CHUNKS - 1) {
                             if (ew == 0 && elect_sync())
-                                signal_sync(buf);
+                                signal_sync(pass);
                         }
 #elif SINGLE_TMEM_ACCUM
                         if (chunk == NUM_CHUNKS - 1)
