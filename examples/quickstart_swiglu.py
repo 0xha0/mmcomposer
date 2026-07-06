@@ -1,11 +1,14 @@
 """Quickstart: fused GEMM + SwiGLU (dual-B) on Blackwell (B200).
 
-    python examples/quickstart_swiglu.py                  # default FFN shape 32768x4608x768
+    python examples/quickstart_swiglu.py                  # default FFN shape 30000x4608x768
     python examples/quickstart_swiglu.py 8192             # square 8192
-    python examples/quickstart_swiglu.py 32768 4608 768   # M N K
+    python examples/quickstart_swiglu.py 30000 4608 768   # M N K
 
 A = [M, K]; packed projection weight B = [K, N], split by column views into
-B_left, B_gate = [K, N/2]; bf16, M and N multiples of 256, K a multiple of 64.
+B_left, B_gate = [K, N/2]; bf16, M arbitrary (ragged token counts welcome),
+N a multiple of 256, K a multiple of 64.  A ragged M -- the usual case, since M
+is the token count -- is handled by a ceil-div grid + TMA out-of-bounds clipping;
+N stays a multiple of 256 because C packs each BN tile as [left | gate].
 One fused launch returns:
 
     c = [M, N]      packed wide GEMM, [left | gate] per BN=256 tile
@@ -23,7 +26,8 @@ import mmcomposer as mmc
 # three args -> M N K.
 args = sys.argv[1:]
 if len(args) == 0:
-    M, N, K = 32768, 4608, 768          # an FFN shape: M tokens, N=4608, K=768
+    M, N, K = 30000, 4608, 768          # ragged token count: M=30000 is NOT a
+                                        # multiple of 256 (30000 % 256 = 48)
 elif len(args) == 1:
     M = N = K = int(args[0])
 elif len(args) == 3:
@@ -44,7 +48,8 @@ c, d = mmc.matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate)
 # Correctness vs torch (bf16 tolerances): d == (a @ b_left) * silu(a @ b_gate).
 d_ref = (a @ b_left) * F.silu(a @ b_gate)
 ok = torch.allclose(d, d_ref, rtol=2e-2, atol=1e-1)
-print(f"shape M={M} N={N} K={K}   D allclose vs torch = {ok}")
+ragged = f"  (M ragged: M % 256 = {M % 256})" if M % 256 else ""
+print(f"shape M={M} N={N} K={K}   D allclose vs torch = {ok}{ragged}")
 assert ok
 
 # GPU kernel time (triton do_bench: warmup 1000 ms, rep 1000 ms, median):

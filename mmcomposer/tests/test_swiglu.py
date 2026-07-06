@@ -47,8 +47,8 @@ def test_validate_rejects_bad_inputs():
         swiglu.validate(a, torch.zeros(64, 256, dtype=torch.bfloat16), bg)
     with pytest.raises(ValueError):                            # left/gate N/2 differ
         swiglu.validate(a, bl, torch.zeros(128, 128, dtype=torch.bfloat16))
-    with pytest.raises(ValueError):                           # M not mult of 256
-        swiglu.validate(torch.zeros(128, 128, dtype=torch.bfloat16), bl, bg)
+    # M is arbitrary now (ragged M -> ceil-div grid + TMA out-of-bounds clip)
+    assert swiglu.validate(torch.zeros(130, 128, dtype=torch.bfloat16), bl, bg) == (130, 512, 128)
     with pytest.raises(ValueError):                          # N=2*192 not mult of 256
         swiglu.validate(a, torch.zeros(128, 192, dtype=torch.bfloat16),
                         torch.zeros(128, 192, dtype=torch.bfloat16))

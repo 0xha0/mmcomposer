@@ -81,8 +81,14 @@ def validate(a, b_left, b_gate):
     _check_dense_or_column_view("b_gate", b_gate)
     N = 2 * Hl
     errs = []
-    if M % (CTA_GROUP * BM):
-        errs.append(f"M={M} must be a multiple of {CTA_GROUP * BM}")
+    # M is arbitrary: it is only a row count (never a TMA stride), so ragged M is
+    # handled by a ceil-div grid + TMA out-of-bounds clipping (trailing rows / a
+    # fully-out-of-bounds second cluster CTA are masked away on store).  N must
+    # stay a multiple of BN: the packed C layout writes each BN tile as
+    # [left | gate], so a partial N tile would push its gate half past N and lose
+    # it.  K stays a multiple of BK (the K-loop has no partial-tile path).
+    if M < 1:
+        errs.append(f"M={M} must be positive")
     if N % BN:
         errs.append(f"N={N} (=2*{Hl}) must be a multiple of {BN}")
     if Ka % BK:
