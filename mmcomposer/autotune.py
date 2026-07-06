@@ -39,10 +39,16 @@ CORRECT_TOL = 5e-2
 # CLI helpers
 # ---------------------------------------------------------------------------
 def parse_shape(tok: str):
-    """'8192' -> (8192,8192,8192); '32768x4608x768' -> (32768,4608,768)."""
-    tok = tok.lower().strip()
+    """'8192' -> (8192,8192,8192); '32768x4608x768' -> (32768,4608,768).
+
+    Accepts 'x', 'X', or the '×' (U+00D7) multiplication sign as the separator,
+    so a copy-pasted '16384×8192×768' works too."""
+    tok = tok.lower().strip().replace("×", "x")
     if "x" in tok:
-        M, N, K = (int(v) for v in tok.split("x"))
+        parts = tok.split("x")
+        if len(parts) != 3:
+            raise ValueError(f"shape {tok!r} must be 'N' or 'MxNxK' (got {len(parts)} dims)")
+        M, N, K = (int(v) for v in parts)
         return M, N, K
     s = int(tok)
     return s, s, s
