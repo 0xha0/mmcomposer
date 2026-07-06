@@ -77,8 +77,16 @@ def launch_dims(config, M, N, K, num_sms=None):
         epi = c["bm"] * (c["bn"] // 2 + 8) * 2
     else:
         epi = c["bm"] * (c["bn"] + 8) * 2
-    shared = ((c["ns"] * slot + epi) if c.get("overlap", 0)
-              else max(c["ns"] * slot, epi)) + 1024
+    if c.get("seg_panels", 0):
+        # Segmented panel schedule: [ A ring NS+1 | B ring budget-fill | C_store ]
+        # (mirrors validate_config / the tier launcher).
+        seg_na = c["ns"] + 1
+        seg_nb = 14 - c.get("tma_store_stages", 2) - seg_na
+        seg_b_slot = (c["bn"] // 2 // cta_group) * c["bk"] * 2
+        shared = seg_na * a_slot + seg_nb * seg_b_slot + epi + 1024
+    else:
+        shared = ((c["ns"] * slot + epi) if c.get("overlap", 0)
+                  else max(c["ns"] * slot, epi)) + 1024
     block = (((c["nw"] + 4) * 32 if c.get("overlap", 0) else c["nw"] * 32), 1, 1)
     if c.get("persistent") and num_sms:
         grid = (num_sms - num_sms % cta_group, 1, 1)

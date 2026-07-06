@@ -173,7 +173,15 @@ def launch_spec(tier, k, M, N, K, num_sms=None):
     else:
         epi = k["bm"] * (k["bn"] + 8) * 2
     # Overlap runs ring + epilogue staging concurrently -> disjoint (ring+epi).
-    shared = ((k["ns"] * slot + epi) if k.get("overlap", 0) else max(k["ns"] * slot, epi)) + 1024
+    if k.get("seg_panels", 0):
+        # Segmented panel schedule: [ A ring NS+1 | B ring budget-fill | C_store ]
+        # (mirrors runtime.launch_dims / mvp_core.validate_config).
+        seg_na = k["ns"] + 1
+        seg_nb = 14 - k.get("tma_store_stages", 2) - seg_na
+        seg_b_slot = (k["bn"] // 2 // cta_group) * k["bk"] * 2
+        shared = seg_na * a_slot + seg_nb * seg_b_slot + epi + 1024
+    else:
+        shared = ((k["ns"] * slot + epi) if k.get("overlap", 0) else max(k["ns"] * slot, epi)) + 1024
     # Overlap: 2 stream warps (TMA+MMA) in warpgroup 0 + nw epilogue warps from
     # warp 4 (warps 2,3 idle for the warpgroup boundary) -> (nw+4) warps.
     block  = (((k["nw"] + 4) * 32 if k.get("overlap", 0) else k["nw"] * 32), 1, 1)
@@ -200,7 +208,7 @@ def tag_for(tier, k):
             f"_ld{k.get('ld_width', 8)}_ov{k.get('overlap', 0)}"
             f"_sp{k.get('split_epilogue', 0)}_l1{k.get('l1_no_alloc', 0)}"
             f"_tp{k.get('tma_pipelined', 0)}_ts{k.get('tma_store_stages', 2)}"
-            f"_st{k.get('single_tmem', 0)}")
+            f"_st{k.get('single_tmem', 0)}_seg{k.get('seg_panels', 0)}")
 
 
 def render_to_dir(tier, k):
@@ -214,7 +222,8 @@ def render_to_dir(tier, k):
                            l1_no_alloc=k.get("l1_no_alloc", 0),
                            tma_pipelined=k.get("tma_pipelined", 0),
                            tma_store_stages=k.get("tma_store_stages", 2),
-                           single_tmem=k.get("single_tmem", 0))
+                           single_tmem=k.get("single_tmem", 0),
+                           seg_panels=k.get("seg_panels", 0))
     # Codegen must emit a fully branch-free kernel; a residual #if / knob
     # if-constexpr means a forgotten conversion — fail clearly here rather than
     # as an opaque nvcc error during compile.
@@ -399,6 +408,7 @@ def main():
     ap.add_argument("--tma-pipelined", default=None, help="comma-separated EPILOGUE_TMA_PIPELINED values to sweep")
     ap.add_argument("--tma-store-stages", default=None, help="comma-separated TMA_STORE_STAGES values to sweep")
     ap.add_argument("--single-tmem", default=None, help="comma-separated SINGLE_TMEM_ACCUM values to sweep")
+    ap.add_argument("--seg-panels", default=None, help="comma-separated SEGMENTED_PANELS values to sweep")
     ap.add_argument("--single-tmem-policy", choices=["all", "bn512-only"], default=None,
                     help="optional production pruning: bn512-only keeps SINGLE_TMEM_ACCUM=0 for BN<512 and =1 for BN=512")
     ap.add_argument("--json", default=None)
@@ -435,6 +445,7 @@ def main():
         "tma_store_stages": parse_int_csv(args.tma_store_stages),
         "single_tmem": parse_int_csv(args.single_tmem),
         "single_tmem_policy": args.single_tmem_policy,
+        "seg_panels": parse_int_csv(args.seg_panels),
     }
     filters = {k: v for k, v in filters.items() if v is not None}
     to_run, n_valid, n_invalid, n_sample = build_to_run(tier_dirs, args.invalid_sample, filters)
@@ -559,6 +570,7 @@ def main():
             ("--tma-store-stages", args.tma_store_stages),
             ("--single-tmem", args.single_tmem),
             ("--single-tmem-policy", args.single_tmem_policy),
+            ("--seg-panels", args.seg_panels),
         ):
             if val is not None:
                 cmd += [flag, val]
@@ -645,7 +657,7 @@ def main():
                       f"bn{best['bn']} ns{best['ns']} gsm{best['gsm']} nw{best['nw']} "
                       f"pers{best.get('persistent',0)} tma{best.get('tma_pipelined',0)} "
                       f"tms{best.get('tma_store_stages',2)} "
-                      f"st{best.get('single_tmem',0)}")
+                      f"st{best.get('single_tmem',0)} seg{best.get('seg_panels',0)}")
 
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(ordered, indent=2))
@@ -677,6 +689,7 @@ def main():
                               "tma_pipelined": r.get("tma_pipelined", 0),
                               "tma_store_stages": r.get("tma_store_stages", 2),
                               "single_tmem": r.get("single_tmem", 0),
+                              "seg_panels": r.get("seg_panels", 0),
                               "correct": bool(r["correct"]), "perf": perf})
         matrix = {
             "generated_by": "webui/tests/gpu_codegen_driver.py",

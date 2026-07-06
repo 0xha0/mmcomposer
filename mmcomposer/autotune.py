@@ -91,7 +91,8 @@ def _render(tier, k, build_root, epilogue=None, n_extra=0) -> str:
         split_epilogue=k.get("split_epilogue", 0), l1_no_alloc=k.get("l1_no_alloc", 0),
         tma_pipelined=k.get("tma_pipelined", 0),
         tma_store_stages=k.get("tma_store_stages", 2),
-        single_tmem=k.get("single_tmem", 0), epilogue=epilogue, n_extra=n_extra))
+        single_tmem=k.get("single_tmem", 0),
+        seg_panels=k.get("seg_panels", 0), epilogue=epilogue, n_extra=n_extra))
     return str(src)
 
 
@@ -303,6 +304,8 @@ def main() -> int:
     ap.add_argument("--single-tmem", dest="single_tmem", default=None)
     ap.add_argument("--single-tmem-policy", dest="single_tmem_policy",
                     choices=["all", "bn512-only"], default=None)
+    ap.add_argument("--seg-panels", dest="seg_panels", default=None,
+                    help="override SEGMENTED_PANELS list, e.g. 0,1 (BN512 segmented panel schedule)")
     args = ap.parse_args()
     M, N, K = parse_shape(args.shape)
 
@@ -311,7 +314,8 @@ def main() -> int:
                        ("persistent", args.persistent), ("two_cta", args.two_cta),
                        ("overlap", args.overlap), ("split_epilogue", args.split_epilogue),
                        ("l1_no_alloc", args.l1_no_alloc), ("tma_pipelined", args.tma_pipelined),
-                       ("tma_store_stages", args.tma_store_stages), ("single_tmem", args.single_tmem)):
+                       ("tma_store_stages", args.tma_store_stages), ("single_tmem", args.single_tmem),
+                       ("seg_panels", args.seg_panels)):
         with_filter_override(filters, fkey, spec)
     if args.single_tmem_policy is not None:
         filters["single_tmem_policy"] = args.single_tmem_policy

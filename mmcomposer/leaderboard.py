@@ -8,8 +8,9 @@ mvp_core, no sweep state.
 A *record* is a dict with ``tflops`` (and optional ``vs_cublas``) plus a
 ``config`` dict holding the knobs (``bn``, ``ns``, ``gsm``, ``nw``,
 ``persistent``, ``overlap``, ``split_epilogue``, ``l1_no_alloc``,
-``tma_pipelined``, ``tma_store_stages``, ``single_tmem``) and the display flags
-``ws`` / ``cluster``.  Knobs may also be flat on the record; `_cfg` handles both.
+``tma_pipelined``, ``tma_store_stages``, ``single_tmem``, ``seg_panels``) and the
+display flags ``ws`` / ``cluster``.  Knobs may also be flat on the record; `_cfg`
+handles both.
 
 Public API:
     progress_bar(done, total, width=36) -> str
@@ -68,7 +69,7 @@ def render(results, shape, *, cublas_tflops=None, n_combos=None, top: int = 10,
     lines.append("")
     hdr = (f"{'#':>2}  {'TFLOPS':>7}  {'%cuBLAS':>7}  {'WS':>3} {'2CTA':>4}  "
            f"{'BN':>3} {'NS':>2} {'GSM':>3} {'NW':>2}  {'PERS':>4} {'OV':>2} "
-           f"{'SP':>2} {'L1':>2} {'TMA':>3} {'TMS':>3} {'STM':>3}")
+           f"{'SP':>2} {'L1':>2} {'TMA':>3} {'TMS':>3} {'STM':>3} {'SEG':>3}")
     lines.append(hdr)
     lines.append("-" * len(hdr))
     for i, r in enumerate(rows, 1):
@@ -85,7 +86,7 @@ def render(results, shape, *, cublas_tflops=None, n_combos=None, top: int = 10,
             f"{c.get('nw', 0):>2}  {c.get('persistent', 0):>4} {c.get('overlap', 0):>2} "
             f"{c.get('split_epilogue', 0):>2} {c.get('l1_no_alloc', 0):>2} "
             f"{c.get('tma_pipelined', 0):>3} {c.get('tma_store_stages', 2):>3} "
-            f"{c.get('single_tmem', 0):>3}")
+            f"{c.get('single_tmem', 0):>3} {c.get('seg_panels', 0):>3}")
     return "\n".join(lines) + "\n"
 
 

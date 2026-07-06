@@ -23,19 +23,20 @@ FULL = {"single_tmem_policy": "all"}
 
 
 def test_production_count():
-    # The pruned production sweep -- the 738 combos referenced in the talk.
-    assert sum(1 for _ in combos.valid_combos(WS_DIRS, PROD)) == 738
+    # The pruned production sweep -- 738 pre-seg (the talk's number) + 180
+    # BN512 segmented-panel variants (NS{3..7} x ts{1,2} x GSM x NW).
+    assert sum(1 for _ in combos.valid_combos(WS_DIRS, PROD)) == 918
 
 
 def test_full_count():
-    assert sum(1 for _ in combos.valid_combos(ALL_DIRS, FULL)) == 10062
+    assert sum(1 for _ in combos.valid_combos(ALL_DIRS, FULL)) == 10494
 
 
 def test_validity_prunes_the_raw_grid():
     raw = sum(1 for _ in combos.all_combos(WS_DIRS, PROD))
     valid = sum(1 for _ in combos.valid_combos(WS_DIRS, PROD))
-    assert raw == 8640
-    assert valid == 738
+    assert raw == 12960
+    assert valid == 918
     assert valid < raw  # validation actually drops combos
 
 
@@ -82,7 +83,7 @@ def test_is_valid_accepts_good_rejects_bad():
 
 KNOB_KEYS = {"bm", "bn", "bk", "ns", "gsm", "nw", "persistent", "ld_width",
              "overlap", "split_epilogue", "l1_no_alloc", "tma_pipelined",
-             "tma_store_stages", "single_tmem"}
+             "tma_store_stages", "single_tmem", "seg_panels"}
 
 
 def test_no_duplicate_valid_combos():
@@ -100,6 +101,40 @@ def test_no_duplicate_valid_combos():
 def test_every_combo_carries_full_knob_set():
     for _, k in combos.all_combos(WS_DIRS, PROD):
         assert set(k) == KNOB_KEYS
+
+
+def test_seg_panels_only_pairs_with_the_bn512_bundle():
+    # Every valid seg_panels=1 combo must be BN=512 with the full pipelined-TMA
+    # overlap bundle and the single shared accumulator (the schedule's contract).
+    seen = 0
+    for tier, k in combos.valid_combos(WS_DIRS, PROD):
+        if not k["seg_panels"]:
+            continue
+        seen += 1
+        assert k["bn"] == 512
+        assert k["single_tmem"] == 1
+        assert k["overlap"] == 1 and k["tma_pipelined"] == 1 and k["persistent"] == 1
+        assert tier["cluster"]
+    assert seen > 0  # the seg arm is actually in the production space
+
+
+def test_seg_panels_invalid_off_bundle():
+    tier3 = mc.TIER_MAP[(True, True)]
+    seg = dict(bm=128, bn=512, bk=64, ns=4, gsm=1, nw=4, persistent=1,
+               ld_width=8, overlap=1, split_epilogue=0, l1_no_alloc=0,
+               tma_pipelined=1, tma_store_stages=2, single_tmem=1, seg_panels=1)
+    assert combos.is_valid(tier3, seg)
+    assert not combos.is_valid(tier3, dict(seg, bn=256))           # BN512-only
+    assert not combos.is_valid(tier3, dict(seg, single_tmem=0))    # needs one accumulator
+    assert not combos.is_valid(tier3, dict(seg, tma_pipelined=0))  # TMA-store path only
+
+
+def test_seg_panels_filter():
+    # seg_panels=[0] must exclude the seg arm entirely; [1] must select only it.
+    assert all(not k["seg_panels"]
+               for _, k in combos.all_combos(WS_DIRS, {**PROD, "seg_panels": [0]}))
+    assert all(k["seg_panels"]
+               for _, k in combos.all_combos(WS_DIRS, {**PROD, "seg_panels": [1]}))
 
 
 def test_filters_honored_across_dimensions():

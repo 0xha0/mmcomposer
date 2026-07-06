@@ -83,6 +83,15 @@ CONFIGS = {
         ["EPILOGUE_OVERLAP", "EPILOGUE_TMA_PIPELINED", "TMA_STORE_STAGES",
          "SINGLE_TMEM_ACCUM"],
     ),
+    "tier3_overlap_bn512_seg_panels": (   # BN512 segmented panel schedule
+        dict(skeleton="tier3_cluster_swizzle", BM=128, BN=512, BK=64, NS=4,
+             GROUP_SIZE_M=8, NUM_WARPS=4, TCGEN05_LD_WIDTH=8,
+             EPILOGUE_OVERLAP=1, EPILOGUE_SPLIT=0, PERSISTENT=1, TWO_CTA=1,
+             EPILOGUE_L1_NO_ALLOC=0, EPILOGUE_TMA_PIPELINED=1,
+             TMA_STORE_STAGES=2, SINGLE_TMEM_ACCUM=1, SEGMENTED_PANELS=1),
+        ["EPILOGUE_OVERLAP", "EPILOGUE_TMA_PIPELINED", "TMA_STORE_STAGES",
+         "SINGLE_TMEM_ACCUM", "SEGMENTED_PANELS"],
+    ),
     "tier3_sequential": (
         dict(skeleton="tier3_cluster_swizzle", BM=128, BN=256, BK=64, NS=3,
              GROUP_SIZE_M=8, NUM_WARPS=8, TCGEN05_LD_WIDTH=8,
