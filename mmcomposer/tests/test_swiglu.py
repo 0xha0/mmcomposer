@@ -64,27 +64,37 @@ def _small_cuda_swiglu_inputs(seed=0):
     return a, b[:, :H], b[:, H:]
 
 
-def test_general_api_hopper_no_preact_matches_reference():
+def test_general_api_hopper_swiglu_matches_reference():
     if not torch.cuda.is_available():
         pytest.skip("no CUDA")
     if torch.cuda.get_device_capability()[0] != 9:
         pytest.skip("not Hopper")
     a, b_left, b_gate = _small_cuda_swiglu_inputs(seed=10)
+    N = 2 * b_left.shape[1]
+
+    c_ref, d_ref = _reference(a, b_left, b_gate, N)
 
     d = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, sync=True)
-    left = a @ b_left
-    gate = a @ b_gate
-    ref = (left.float() * (gate.float() * torch.sigmoid(gate.float()))).to(torch.bfloat16)
-    rel = ((d.float() - ref.float()).norm() / ref.float().norm()).item()
-    print(f"    Hopper no-preact SwiGLU rel_err={rel:.3e}")
-    assert tuple(d.shape) == tuple(ref.shape)
-    assert rel < 5e-2
+    d_rel = ((d.float() - d_ref.float()).norm() / d_ref.float().norm()).item()
+    print(f"    Hopper no-preact SwiGLU D rel_err={d_rel:.3e}")
+    assert tuple(d.shape) == tuple(d_ref.shape)
+    assert d_rel < 5e-2
 
     d2 = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, out=d, sync=True)
     assert d2.data_ptr() == d.data_ptr()
 
-    with pytest.raises(NotImplementedError, match="store_preact=True"):
-        mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True)
+    c, d3 = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True, sync=True)
+    c_rel = ((c.float() - c_ref.float()).norm() / c_ref.float().norm()).item()
+    d_rel = ((d3.float() - d_ref.float()).norm() / d_ref.float().norm()).item()
+    print(f"    Hopper store-preact SwiGLU C rel_err={c_rel:.3e} D rel_err={d_rel:.3e}")
+    assert tuple(c.shape) == tuple(c_ref.shape)
+    assert tuple(d3.shape) == tuple(d_ref.shape)
+    assert c_rel < 5e-2
+    assert d_rel < 5e-2
+
+    c2, d4 = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True,
+                                      preact=c, out=d3, sync=True)
+    assert c2.data_ptr() == c.data_ptr() and d4.data_ptr() == d3.data_ptr()
 
 
 def test_general_api_rejects_preact_without_store_preact():

@@ -47,6 +47,7 @@ _TRACE_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _HOPPER_FIXED_WS = None        # fixed Hopper WS kernel callable (lazy, shape-agnostic)
 _SWIGLU_DUAL_B_NS6_S2 = None   # the fixed swiglu kernel callable (lazy, shape-agnostic)
 _HOPPER_SWIGLU_DUAL_B = None       # fixed Hopper no-preact SwiGLU callable
+_HOPPER_SWIGLU_DUAL_B_STORE_PREACT = None  # fixed Hopper preact-storing callable
 
 
 def _trace(epilogue):
@@ -320,7 +321,8 @@ def matmul_swiglu_dual_b(a, b_left, b_gate, *, store_preact=False, preact=None,
 
     Current backend coverage:
       * Blackwell: ``store_preact=True`` dispatches to the fixed ns6/s2 kernel.
-      * Hopper: ``store_preact=False`` dispatches to the fixed WS no-preact kernel.
+      * Hopper: both ``store_preact=False`` and ``store_preact=True`` dispatch to
+        fixed WS kernels.
     """
     M, N, _ = _validate_swiglu_dual_b_cuda(a, b_left, b_gate)
     H = N // 2
@@ -340,11 +342,12 @@ def matmul_swiglu_dual_b(a, b_left, b_gate, *, store_preact=False, preact=None,
             a, b_left, b_gate, c=preact, d=out, sync=sync)
 
     if _hopper.is_hopper_device(a.device):
+        global _HOPPER_SWIGLU_DUAL_B, _HOPPER_SWIGLU_DUAL_B_STORE_PREACT
         if store_preact:
-            raise NotImplementedError(
-                "Hopper matmul_swiglu_dual_b currently supports store_preact=False only; "
-                "store_preact=True needs a separate preact-storing kernel.")
-        global _HOPPER_SWIGLU_DUAL_B
+            if _HOPPER_SWIGLU_DUAL_B_STORE_PREACT is None:
+                _HOPPER_SWIGLU_DUAL_B_STORE_PREACT = _hopper_swiglu.kernel_store_preact()
+            return _HOPPER_SWIGLU_DUAL_B_STORE_PREACT(
+                a, b_left, b_gate, c=preact, d=out, sync=sync)
         if _HOPPER_SWIGLU_DUAL_B is None:
             _HOPPER_SWIGLU_DUAL_B = _hopper_swiglu.kernel()
         return _HOPPER_SWIGLU_DUAL_B(a, b_left, b_gate, d=out, sync=sync)

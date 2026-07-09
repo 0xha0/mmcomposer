@@ -1,13 +1,12 @@
-"""Fixed Hopper dual-B SwiGLU kernel used by ``mmc.matmul_swiglu_dual_b``.
+"""Fixed Hopper dual-B SwiGLU kernels used by ``mmc.matmul_swiglu_dual_b``.
 
-This is the inference-oriented path for Hopper: it computes
+Both Hopper paths use the same fixed WS pipeline: BM128 / internal BN256 / BK64 /
+WG2 / NS4 / GM8 / 2 TMA-store stages.  The internal BN256 accumulator is
+interpreted as ``[left 128 | gate 128]``.
 
-    D = (A @ B_left) * silu(A @ B_gate)
-
-without storing the packed preactivation ``[A @ B_left | A @ B_gate]``.  The
-kernel is based on the fixed Hopper WS GEMM pipeline: BM128 / internal BN256 /
-BK64 / WG2 / NS4 / GM8 / 2 TMA-store stages.  The internal BN256 accumulator is
-interpreted as ``[left 128 | gate 128]`` and the epilogue writes only ``D[M,H]``.
+``kernel()`` computes and stores only ``D = left * silu(gate)``.
+``kernel_store_preact()`` stores both packed preactivation ``C = [left | gate]``
+and ``D``.
 """
 from __future__ import annotations
 
@@ -21,7 +20,10 @@ from . import runtime
 from . import swiglu as _swiglu
 
 ARCH = "sm_90a"
-SYMBOL = "matmul_hopper_swiglu_dual_b_bm128_bn256_bk64_wg2_ns4_gm8"
+SYMBOL_NO_PREACT = "matmul_hopper_swiglu_dual_b_bm128_bn256_bk64_wg2_ns4_gm8"
+SYMBOL_STORE_PREACT = (
+    "matmul_hopper_swiglu_dual_b_store_preact_bm128_bn256_bk64_wg2_ns4_gm8"
+)
 
 BM, BN, BK = 128, 256, 64
 OUT_N = BN // 2
@@ -80,7 +82,7 @@ def launch_dims(M: int, H: int, K: int, num_sms: int):
     return grid, block, SHARED_BYTES
 
 
-def _descriptors(a, b_left, b_gate, d, M, H, K):
+def _common_descriptors(a, b_left, b_gate, M, H, K):
     rt, _ = runtime._backends()
     bl_stride = int(b_left.stride(0)) * ELEM_BYTES
     bg_stride = int(b_gate.stride(0)) * ELEM_BYTES
@@ -96,25 +98,76 @@ def _descriptors(a, b_left, b_gate, d, M, H, K):
                               global_dim=[H, K], global_strides=[bg_stride],
                               box_dim=[STORE_N, BK], element_strides=[1, 1],
                               swizzle=rt.TMA_SWIZZLE_128B)
-    D = rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=d.data_ptr(),
-                             global_dim=[H, M], global_strides=[H * ELEM_BYTES],
-                             box_dim=[STORE_N, BM], element_strides=[1, 1],
-                             swizzle=rt.TMA_SWIZZLE_128B)
-    return A, BL, BG, D
+    return A, BL, BG
 
 
-def _prepare(a, b_left, b_gate, d, M, H, K, cubin_path, device_index):
+def _d_descriptor(d, M, H):
+    rt, _ = runtime._backends()
+    return rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=d.data_ptr(),
+                                global_dim=[H, M], global_strides=[H * ELEM_BYTES],
+                                box_dim=[STORE_N, BM], element_strides=[1, 1],
+                                swizzle=rt.TMA_SWIZZLE_128B)
+
+
+def _c_descriptor(c, M, H):
+    rt, _ = runtime._backends()
+    N = 2 * H
+    return rt.encode_tensor_map(dtype=rt.TMA_BFLOAT16, rank=2, gptr=c.data_ptr(),
+                                global_dim=[N, M], global_strides=[N * ELEM_BYTES],
+                                box_dim=[STORE_N, BM], element_strides=[1, 1],
+                                swizzle=rt.TMA_SWIZZLE_128B)
+
+
+def _prepare_no_preact(a, b_left, b_gate, d, M, H, K, cubin_path, device_index):
     rt, driver = runtime._backends()
     num_sms = _hopper._ensure_device_context(device_index)
-    _, fn = _hopper._load_for_device(cubin_path, SYMBOL, device_index)
+    _, fn = _hopper._load_for_device(cubin_path, SYMBOL_NO_PREACT, device_index)
     grid, block, shared = launch_dims(M, H, K, num_sms)
     rt.cu(driver.cuFuncSetAttribute(
         fn, driver.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
         shared))
-    maps = _descriptors(a, b_left, b_gate, d, M, H, K)
+    maps = (*_common_descriptors(a, b_left, b_gate, M, H, K), _d_descriptor(d, M, H))
     args = [(ctypes.c_byte * 128).from_buffer_copy(m.tobytes()) for m in maps]
     args += [ctypes.c_int(M), ctypes.c_int(K), ctypes.c_int(H)]
     return fn, grid, block, shared, args
+
+
+def _prepare_store_preact(a, b_left, b_gate, c, d, M, H, K, cubin_path, device_index):
+    rt, driver = runtime._backends()
+    num_sms = _hopper._ensure_device_context(device_index)
+    _, fn = _hopper._load_for_device(cubin_path, SYMBOL_STORE_PREACT, device_index)
+    grid, block, shared = launch_dims(M, H, K, num_sms)
+    rt.cu(driver.cuFuncSetAttribute(
+        fn, driver.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+        shared))
+    maps = (*_common_descriptors(a, b_left, b_gate, M, H, K),
+            _c_descriptor(c, M, H), _d_descriptor(d, M, H))
+    args = [(ctypes.c_byte * 128).from_buffer_copy(m.tobytes()) for m in maps]
+    args += [ctypes.c_int(M), ctypes.c_int(K), ctypes.c_int(H)]
+    return fn, grid, block, shared, args
+
+
+def _check_d(d, M, H, device):
+    import torch
+
+    if d.dtype != torch.bfloat16 or tuple(d.shape) != (M, H) or not d.is_cuda:
+        raise ValueError(f"out must be a CUDA bf16 tensor of shape ({M}, {H})")
+    if d.device != device:
+        raise ValueError(f"out must be on {device}, got {d.device}")
+    if not d.is_contiguous():
+        raise ValueError("out must be row-major contiguous")
+
+
+def _check_c(c, M, H, device):
+    import torch
+
+    N = 2 * H
+    if c.dtype != torch.bfloat16 or tuple(c.shape) != (M, N) or not c.is_cuda:
+        raise ValueError(f"preact must be a CUDA bf16 tensor of shape ({M}, {N})")
+    if c.device != device:
+        raise ValueError(f"preact must be on {device}, got {c.device}")
+    if not c.is_contiguous():
+        raise ValueError("preact must be row-major contiguous")
 
 
 def kernel():
@@ -131,12 +184,7 @@ def kernel():
         if d is None:
             d = torch.empty(M, H, dtype=torch.bfloat16, device=a.device)
         else:
-            if d.dtype != torch.bfloat16 or tuple(d.shape) != (M, H) or not d.is_cuda:
-                raise ValueError(f"out must be a CUDA bf16 tensor of shape ({M}, {H})")
-            if d.device != a.device:
-                raise ValueError(f"out must be on {a.device}, got {d.device}")
-            if not d.is_contiguous():
-                raise ValueError("out must be row-major contiguous")
+            _check_d(d, M, H, a.device)
         if stream is None:
             stream = torch.cuda.current_stream(a.device).cuda_stream
         cubin = _ensure_cubin()
@@ -144,7 +192,7 @@ def kernel():
                 b_left.stride(), b_gate.stride(), d.data_ptr())
         st = state.get(skey)
         if st is None:
-            st = _prepare(a, b_left, b_gate, d, M, H, K, cubin, device_index)
+            st = _prepare_no_preact(a, b_left, b_gate, d, M, H, K, cubin, device_index)
             state[skey] = st
         else:
             _hopper._ensure_device_context(device_index)
@@ -153,5 +201,44 @@ def kernel():
         rt.launch(fn, grid=grid, block=block, shared=shared, args=args,
                   stream=stream, sync=sync)
         return d
+
+    return call
+
+
+def kernel_store_preact():
+    """Return a callable ``k(a, b_left, b_gate, c=None, d=None) -> (c, d)``."""
+    import torch
+
+    state: dict = {}
+
+    def call(a, b_left, b_gate, c=None, d=None, *, sync=False, stream=None):
+        M, H, K = validate(a, b_left, b_gate)
+        device_index = _hopper._device_index(a.device)
+        if not _hopper.is_hopper_device(a.device):
+            raise RuntimeError(f"fixed Hopper SwiGLU requires sm_90, got {a.device}")
+        if c is None:
+            c = torch.empty(M, 2 * H, dtype=torch.bfloat16, device=a.device)
+        else:
+            _check_c(c, M, H, a.device)
+        if d is None:
+            d = torch.empty(M, H, dtype=torch.bfloat16, device=a.device)
+        else:
+            _check_d(d, M, H, a.device)
+        if stream is None:
+            stream = torch.cuda.current_stream(a.device).cuda_stream
+        cubin = _ensure_cubin()
+        skey = (device_index, M, H, K, a.data_ptr(), b_left.data_ptr(), b_gate.data_ptr(),
+                b_left.stride(), b_gate.stride(), c.data_ptr(), d.data_ptr())
+        st = state.get(skey)
+        if st is None:
+            st = _prepare_store_preact(a, b_left, b_gate, c, d, M, H, K, cubin, device_index)
+            state[skey] = st
+        else:
+            _hopper._ensure_device_context(device_index)
+        rt, _ = runtime._backends()
+        fn, grid, block, shared, args = st
+        rt.launch(fn, grid=grid, block=block, shared=shared, args=args,
+                  stream=stream, sync=sync)
+        return c, d
 
     return call

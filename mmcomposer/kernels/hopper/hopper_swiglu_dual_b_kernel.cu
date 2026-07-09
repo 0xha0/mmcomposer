@@ -5,12 +5,12 @@
 #include <cuda_bf16.h>
 
 /*
- * Hopper warp-specialized dual-B SwiGLU kernel, no preactivation store.
+ * Hopper warp-specialized dual-B SwiGLU kernels.
  *
  * Fixed config: BM128 / internal BN256 / BK64 / WG2 / NS4 / GM8.  Each output
  * tile covers 128 H columns.  The internal BN256 accumulator is laid out as
- * [left 128 | gate 128], and the epilogue writes only
- * D = left * silu(gate), so no [left | gate] preactivation is stored.
+ * [left 128 | gate 128].  One entry writes only D = left * silu(gate); the
+ * store-preact entry also writes packed C = [all-left | all-gate].
  */
 
 #ifndef LB_MIN_BLOCKS
@@ -193,11 +193,12 @@ void wgmma_ss_call(float* acc, uint64_t desc_a, uint64_t desc_b) {
 
 // -- Warp-specialized Hopper kernel: producer TMA load + math WGMMA -----------
 
-template<int BM, int BN, int BK, int NUM_WG, int NUM_STAGES, int GROUP_M>
+template<int BM, int BN, int BK, int NUM_WG, int NUM_STAGES, int GROUP_M, bool STORE_PREACT>
 __device__ __forceinline__ void hopper_swiglu_dual_b_impl(
     const CUtensorMap* A_tmap,
     const CUtensorMap* B_left_tmap,
     const CUtensorMap* B_gate_tmap,
+    const CUtensorMap* C_tmap,
     const CUtensorMap* D_tmap,
     int M, int K, int H
 ) {
@@ -396,14 +397,81 @@ __device__ __forceinline__ void hopper_swiglu_dual_b_impl(
         const int base_col = (lane % 4) * 2;
         const int base_row = lane / 4;
 
+        int store_stage = 0;
+
+#define WAIT_STORE_BUFFER()                                                        \
+    do {                                                                            \
+        if (tid == 0) {                                                             \
+            tma_wait_group<TMA_STORE_STAGES - 1>();                                 \
+        }                                                                           \
+        math_barrier();                                                             \
+    } while (0)
+
+#define ISSUE_STORE(tmap_, col_)                                                    \
+    do {                                                                            \
+        asm volatile("fence.proxy.async.shared::cta;" ::: "memory");              \
+        math_barrier();                                                             \
+        if (tid == 0) {                                                             \
+            const uint32_t src = (uint32_t)__cvta_generic_to_shared(                \
+                C_store + store_stage * STORE_BUF_BYTES / BF16_BYTES);              \
+            tma_2d_store((tmap_), src, (col_), block_row);                          \
+            tma_commit_group();                                                     \
+        }                                                                           \
+        store_stage ^= 1;                                                           \
+        math_barrier();                                                             \
+    } while (0)
+
         #pragma unroll
         for (int chunk = 0; chunk < CHUNKS; chunk++) {
-            const int store_stage = chunk & 1;
-            if (tid == 0) {
-                tma_wait_group<TMA_STORE_STAGES - 1>();
-            }
-            math_barrier();
+            if constexpr (STORE_PREACT) {
+                WAIT_STORE_BUFFER();
+                #pragma unroll
+                for (int m = 0; m < M_ITERS; m++) {
+                    const int row0 = wg_id * M_PER_WG + m * 64 + local_warp * 16 + base_row;
+                    const int row8 = row0 + 8;
+                    #pragma unroll
+                    for (int jj = 0; jj < J_PER_CHUNK; jj++) {
+                        const int j = chunk * J_PER_CHUNK + jj;
+                        const int local_col = jj * 8 + base_col;
+                        const int swz0 = ((local_col / 8) ^ (row0 & 7)) * 8 + (local_col & 7);
+                        const int swz8 = ((local_col / 8) ^ (row8 & 7)) * 8 + (local_col & 7);
+                        __nv_bfloat16* ptr0 = C_store + store_stage * STORE_BUF_BYTES / BF16_BYTES
+                                            + row0 * STORE_N + swz0;
+                        __nv_bfloat16* ptr8 = C_store + store_stage * STORE_BUF_BYTES / BF16_BYTES
+                                            + row8 * STORE_N + swz8;
+                        *reinterpret_cast<__nv_bfloat162*>(ptr0) =
+                            __floats2bfloat162_rn(acc[m][j*4+0], acc[m][j*4+1]);
+                        *reinterpret_cast<__nv_bfloat162*>(ptr8) =
+                            __floats2bfloat162_rn(acc[m][j*4+2], acc[m][j*4+3]);
+                    }
+                }
+                ISSUE_STORE(C_tmap, block_col + chunk * STORE_N);
 
+                WAIT_STORE_BUFFER();
+                #pragma unroll
+                for (int m = 0; m < M_ITERS; m++) {
+                    const int row0 = wg_id * M_PER_WG + m * 64 + local_warp * 16 + base_row;
+                    const int row8 = row0 + 8;
+                    #pragma unroll
+                    for (int jj = 0; jj < J_PER_CHUNK; jj++) {
+                        const int j = (chunk + OUT_CHUNKS) * J_PER_CHUNK + jj;
+                        const int local_col = jj * 8 + base_col;
+                        const int swz0 = ((local_col / 8) ^ (row0 & 7)) * 8 + (local_col & 7);
+                        const int swz8 = ((local_col / 8) ^ (row8 & 7)) * 8 + (local_col & 7);
+                        __nv_bfloat16* ptr0 = C_store + store_stage * STORE_BUF_BYTES / BF16_BYTES
+                                            + row0 * STORE_N + swz0;
+                        __nv_bfloat16* ptr8 = C_store + store_stage * STORE_BUF_BYTES / BF16_BYTES
+                                            + row8 * STORE_N + swz8;
+                        *reinterpret_cast<__nv_bfloat162*>(ptr0) =
+                            __floats2bfloat162_rn(acc[m][j*4+0], acc[m][j*4+1]);
+                        *reinterpret_cast<__nv_bfloat162*>(ptr8) =
+                            __floats2bfloat162_rn(acc[m][j*4+2], acc[m][j*4+3]);
+                    }
+                }
+                ISSUE_STORE(C_tmap, H + block_col + chunk * STORE_N);
+            }
+
+            WAIT_STORE_BUFFER();
             #pragma unroll
             for (int m = 0; m < M_ITERS; m++) {
                 const int row0 = wg_id * M_PER_WG + m * 64 + local_warp * 16 + base_row;
@@ -427,18 +495,11 @@ __device__ __forceinline__ void hopper_swiglu_dual_b_impl(
                         swiglu_value(acc[m][left_j*4+3], acc[m][gate_j*4+3]));
                 }
             }
-
-            asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
-            math_barrier();
-
-            if (tid == 0) {
-                const uint32_t src = (uint32_t)__cvta_generic_to_shared(
-                    C_store + store_stage * STORE_BUF_BYTES / BF16_BYTES);
-                tma_2d_store(D_tmap, src, block_col + chunk * STORE_N, block_row);
-                tma_commit_group();
-            }
-            math_barrier();
+            ISSUE_STORE(D_tmap, block_col + chunk * STORE_N);
         }
+
+#undef WAIT_STORE_BUFFER
+#undef ISSUE_STORE
     }
 
     if (tid == 0) {
@@ -462,8 +523,20 @@ void matmul_hopper_swiglu_dual_b_bm128_bn256_bk64_wg2_ns4_gm##GM_(              
     const __grid_constant__ CUtensorMap D_tmap,                                  \
     int M, int K, int H)                                                         \
 {                                                                                \
-    hopper_swiglu_dual_b_impl<128, 256, 64, 2, 4, GM_>(                          \
-        &A_tmap, &B_left_tmap, &B_gate_tmap, &D_tmap, M, K, H);                  \
+    hopper_swiglu_dual_b_impl<128, 256, 64, 2, 4, GM_, false>(                   \
+        &A_tmap, &B_left_tmap, &B_gate_tmap, &D_tmap, &D_tmap, M, K, H);         \
+}                                                                                \
+extern "C" __global__ __launch_bounds__(9 * 32, LB_MIN_BLOCKS)                   \
+void matmul_hopper_swiglu_dual_b_store_preact_bm128_bn256_bk64_wg2_ns4_gm##GM_( \
+    const __grid_constant__ CUtensorMap A_tmap,                                  \
+    const __grid_constant__ CUtensorMap B_left_tmap,                             \
+    const __grid_constant__ CUtensorMap B_gate_tmap,                             \
+    const __grid_constant__ CUtensorMap C_tmap,                                  \
+    const __grid_constant__ CUtensorMap D_tmap,                                  \
+    int M, int K, int H)                                                         \
+{                                                                                \
+    hopper_swiglu_dual_b_impl<128, 256, 64, 2, 4, GM_, true>(                    \
+        &A_tmap, &B_left_tmap, &B_gate_tmap, &C_tmap, &D_tmap, M, K, H);         \
 }
 
 MAKE_LAUNCHER(8)
