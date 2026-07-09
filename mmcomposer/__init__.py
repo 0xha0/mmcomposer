@@ -23,10 +23,10 @@ from . import (compiler, cache, leaderboard, mvp_core, combos,  # noqa: F401
 
 # defined in mmcomposer.mmc
 _API = {"matmul", "get_tuned_kernel", "get_epilogue_kernel", "tune",
-        "matmul_swiglu_dual_b_ns6_s2"}
+        "matmul_swiglu_dual_b", "matmul_swiglu_dual_b_ns6_s2"}
 
 __all__ = ["matmul", "get_tuned_kernel", "get_epilogue_kernel", "tune",
-           "matmul_swiglu_dual_b_ns6_s2",
+           "matmul_swiglu_dual_b", "matmul_swiglu_dual_b_ns6_s2",
            "combos", "compiler", "runtime", "benchmark", "cache", "leaderboard",
            "autotune", "autotune_isolated", "mvp_core", "codegen", "swiglu", "hopper",
            "epilogue"]

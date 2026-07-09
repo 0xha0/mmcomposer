@@ -281,17 +281,83 @@ def matmul(a, b, *, out=None, sync=False, tune_if_missing=True, epilogue=None,
                                autotune_isolated=autotune_isolated)(a, b, out, aux=aux, sync=sync)
 
 
+def _validate_swiglu_dual_b_cuda(a, b_left, b_gate):
+    M, N, K = _swiglu.validate(a, b_left, b_gate)
+    tensors = (("a", a), ("b_left", b_left), ("b_gate", b_gate))
+    for name, t in tensors:
+        if not getattr(t, "is_cuda", False):
+            raise ValueError(f"{name} must be a CUDA tensor")
+        if t.device != a.device:
+            raise ValueError(f"{name} must be on {a.device}, got {t.device}")
+    return M, N, K
+
+
+def _check_swiglu_output(name, t, shape, device):
+    import torch
+    if t is None:
+        return
+    if t.dtype != torch.bfloat16 or tuple(t.shape) != tuple(shape):
+        raise ValueError(f"{name} must be a bf16 tensor of shape {tuple(shape)}")
+    if not t.is_cuda:
+        raise ValueError(f"{name} must be a CUDA tensor")
+    if t.device != device:
+        raise ValueError(f"{name} must be on {device}, got {t.device}")
+    if not t.is_contiguous():
+        raise ValueError(f"{name} must be row-major contiguous")
+
+
+def matmul_swiglu_dual_b(a, b_left, b_gate, *, store_preact=False, preact=None,
+                         out=None, sync=False):
+    """Fused ``left * silu(gate)`` from two B halves.
+
+    ``A[M,K]``, ``B_left[K,H]`` and ``B_gate[K,H]`` produce the SwiGLU output
+    ``D[M,H]``.  By default this is the inference-oriented form and returns only
+    ``D``.  Pass ``store_preact=True`` for training-style use; then the API also
+    stores and returns the packed preactivation ``C[M,2H] = [A@B_left | A@B_gate]``
+    as ``(C, D)``.
+
+    Current backend coverage:
+      * Blackwell: ``store_preact=True`` dispatches to the fixed ns6/s2 kernel.
+      * Hopper: the first kernel will target ``store_preact=False``; until that
+        kernel lands this path raises ``NotImplementedError``.
+    """
+    M, N, _ = _validate_swiglu_dual_b_cuda(a, b_left, b_gate)
+    H = N // 2
+    _check_swiglu_output("out", out, (M, H), a.device)
+    if store_preact:
+        _check_swiglu_output("preact", preact, (M, N), a.device)
+    elif preact is not None:
+        raise ValueError("preact may only be provided when store_preact=True")
+
+    if _swiglu._is_blackwell_device(a.device):
+        if not store_preact:
+            raise NotImplementedError(
+                "Blackwell matmul_swiglu_dual_b currently uses the fixed ns6/s2 "
+                "kernel, which always stores preact; store_preact=False needs a "
+                "separate no-preact kernel.")
+        return matmul_swiglu_dual_b_ns6_s2(
+            a, b_left, b_gate, c=preact, d=out, sync=sync)
+
+    if _hopper.is_hopper_device(a.device):
+        if store_preact:
+            raise NotImplementedError(
+                "Hopper matmul_swiglu_dual_b will first support store_preact=False; "
+                "store_preact=True needs a separate preact-storing kernel.")
+        raise NotImplementedError(
+            "Hopper matmul_swiglu_dual_b(store_preact=False) interface is in place, "
+            "but the Hopper SwiGLU kernel has not been added yet.")
+
+    raise NotImplementedError(
+        "matmul_swiglu_dual_b currently supports CUDA Hopper/Blackwell devices only")
+
+
 def matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate, *, c=None, d=None, sync=False):
-    """Fused GEMM + SwiGLU with two B halves (the fixed ``..._dual_b_ns6_s2``
-    Blackwell kernel; config baked in, no autotune).
+    """Kernel-specific Blackwell fixed-config SwiGLU entry point.
 
-        A[M, K], B_left[K, N/2], B_gate[K, N/2]  ->  C[M, N], D[M, N/2]
-
-    where ``left = A @ B_left``, ``gate = A @ B_gate``, ``C`` is the packed wide
-    GEMM ([left | gate] per BN=256 tile) and ``D = left * silu(gate)`` is the
-    SwiGLU activation.  Returns ``(c, d)``.  Compiles once per machine (cached),
-    then async on torch's current stream like ``matmul``; pass ``c=``/``d=`` to
-    reuse buffers or ``sync=True`` to block."""
+    This is the ns6/s2 implementation used by ``matmul_swiglu_dual_b`` when
+    ``store_preact=True`` on Blackwell.  It always writes both ``C[M,N]``
+    preactivation and ``D[M,N/2]`` activation and returns ``(c, d)``.
+    """
     global _SWIGLU_DUAL_B_NS6_S2
     if _SWIGLU_DUAL_B_NS6_S2 is None:
         _SWIGLU_DUAL_B_NS6_S2 = _swiglu.kernel()

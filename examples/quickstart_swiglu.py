@@ -42,7 +42,7 @@ b_gate = b[:, H:]   # "gate" projection, column view into packed B
 
 # One fused launch -> combined projection (c) + SwiGLU activation (d).
 # Compiles once per machine, then async on torch's current stream.
-c, d = mmc.matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate)
+c, d = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True)
 
 # Correctness vs torch (bf16 tolerances).
 # C is the combined preactivation x @ [B_left | B_gate] -- exactly what you'd save
@@ -58,7 +58,8 @@ assert ok_c and ok_d
 # GPU kernel time (triton do_bench: warmup 1000 ms, rep 1000 ms, median):
 # the fused kernel vs torch doing the same SwiGLU eagerly (two GEMMs + gate).
 flops = 2.0 * M * N * K
-g = do_bench(lambda: mmc.matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate, c=c, d=d,
+g = do_bench(lambda: mmc.matmul_swiglu_dual_b(a, b_left, b_gate,
+                                                     store_preact=True, preact=c, out=d,
                                                      sync=False),
              warmup=1000, rep=1000, return_mode="median")
 t = do_bench(lambda: (a @ b_left) * F.silu(a @ b_gate),

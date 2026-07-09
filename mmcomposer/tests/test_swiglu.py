@@ -56,6 +56,36 @@ def test_validate_rejects_bad_inputs():
         swiglu.validate(a, torch.zeros(128, 512, dtype=torch.bfloat16)[:, ::2], bg)
 
 
+def _small_cuda_swiglu_inputs(seed=0):
+    M, H, K = 257, 256, 256          # packed N = 512; ragged M exercises API shape flow
+    torch.manual_seed(seed)
+    a = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn(K, 2 * H, dtype=torch.bfloat16, device="cuda")
+    return a, b[:, :H], b[:, H:]
+
+
+def test_general_api_hopper_paths_are_explicitly_staged():
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA")
+    if torch.cuda.get_device_capability()[0] != 9:
+        pytest.skip("not Hopper")
+    a, b_left, b_gate = _small_cuda_swiglu_inputs(seed=10)
+
+    with pytest.raises(NotImplementedError, match="store_preact=False"):
+        mmc.matmul_swiglu_dual_b(a, b_left, b_gate)
+    with pytest.raises(NotImplementedError, match="store_preact=True"):
+        mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True)
+
+
+def test_general_api_rejects_preact_without_store_preact():
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA")
+    a, b_left, b_gate = _small_cuda_swiglu_inputs(seed=11)
+    preact = torch.empty(a.shape[0], 2 * b_left.shape[1], dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(ValueError, match="store_preact=True"):
+        mmc.matmul_swiglu_dual_b(a, b_left, b_gate, preact=preact)
+
+
 def _reference(a, b_left, b_gate, N):
     left = torch.mm(a, b_left)
     gate = torch.mm(a, b_gate)
@@ -79,7 +109,7 @@ def test_swiglu_matches_reference():
     b_gate = torch.randn(K, H, dtype=torch.bfloat16, device="cuda")
     N = 2 * H
 
-    c, d = mmc.matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate)
+    c, d = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True)
     c_ref, d_ref = _reference(a, b_left, b_gate, N)
 
     c_rel = ((c.float() - c_ref.float()).norm() / c_ref.float().norm()).item()
@@ -89,7 +119,8 @@ def test_swiglu_matches_reference():
     assert d_rel < 5e-2, f"D rel err too high: {d_rel}"
 
     # reuse buffers + same callable path
-    c2, d2 = mmc.matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate, c=c, d=d)
+    c2, d2 = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True,
+                                        preact=c, out=d)
     assert c2.data_ptr() == c.data_ptr() and d2.data_ptr() == d.data_ptr()
 
 
@@ -108,7 +139,7 @@ def test_swiglu_matches_reference_for_packed_b_views():
     assert b_left.stride() == (2 * H, 1)
     N = 2 * H
 
-    c, d = mmc.matmul_swiglu_dual_b_ns6_s2(a, b_left, b_gate)
+    c, d = mmc.matmul_swiglu_dual_b(a, b_left, b_gate, store_preact=True)
     c_ref, d_ref = _reference(a, b_left, b_gate, N)
 
     c_rel = ((c.float() - c_ref.float()).norm() / c_ref.float().norm()).item()
