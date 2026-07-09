@@ -413,7 +413,6 @@ __device__ __forceinline__ void hopper_ws_tma_load_store_impl(
                 }
             }
 
-            math_barrier();
             asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
             math_barrier();
 
