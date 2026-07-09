@@ -107,9 +107,4 @@ study-*/           # exploratory experiments
 ```
 
 ## Status & roadmap
-
-The package, CLI, and web UI are working and B200-verified. Planned:
-
-- a **shared/remote results cache** (tune once, reuse everywhere on the same arch);
 - more **dtypes / layouts** (fp16, transposed operands);
-- other architectures (Hopper).
