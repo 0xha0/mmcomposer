@@ -56,6 +56,21 @@ def test_validate_rejects_bad_inputs():
         swiglu.validate(a, torch.zeros(128, 512, dtype=torch.bfloat16)[:, ::2], bg)
 
 
+def test_hopper_swiglu_prefers_packaged_cubin(monkeypatch):
+    import mmcomposer.hopper_swiglu as hopper_swiglu
+
+    monkeypatch.setattr(hopper_swiglu, "_CUBIN", None)
+    monkeypatch.setattr(hopper_swiglu, "_cuda_driver_version", lambda: 13000)
+
+    def fail_compile(reason):
+        raise AssertionError(f"nvcc fallback should not run: {reason}")
+
+    monkeypatch.setattr(hopper_swiglu, "_compile_cubin_fallback", fail_compile)
+    cubin = hopper_swiglu._ensure_cubin()
+    assert cubin == str(hopper_swiglu._PACKAGED_CUBIN)
+    assert hopper_swiglu._PACKAGED_CUBIN.exists()
+
+
 def _small_cuda_swiglu_inputs(seed=0):
     M, H, K = 257, 256, 256          # packed N = 512; ragged M exercises API shape flow
     torch.manual_seed(seed)

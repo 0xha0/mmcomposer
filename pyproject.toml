@@ -32,5 +32,6 @@ packages = ["mmcomposer", "mmcomposer.codegen"]
     "kernels/**/*.cu.frag",
     "kernels/**/*.py",
     "kernels/**/*.json",
+    "kernels/**/*.cubin",
     "DESIGN.md",
 ]

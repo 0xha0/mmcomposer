@@ -36,8 +36,12 @@ SHARED_BYTES = (
     NS * BM * BK + NS * BK * BN + TMA_STORE_STAGES * BM * STORE_N
 ) * ELEM_BYTES
 
-_SRC = pathlib.Path(__file__).resolve().parent / "kernels" / "hopper" / \
-    "hopper_swiglu_dual_b_kernel.cu"
+_KERNEL_DIR = pathlib.Path(__file__).resolve().parent / "kernels" / "hopper"
+_SRC = _KERNEL_DIR / "hopper_swiglu_dual_b_kernel.cu"
+_PACKAGED_CUBIN = _KERNEL_DIR / "hopper_swiglu_dual_b_kernel_sm_90a.cubin"
+# The bundled cubin is built with CUDA 12.8.  Newer drivers are backward
+# compatible; older drivers can still use the nvcc fallback if available.
+_PACKAGED_CUBIN_MIN_DRIVER = 12080
 
 _CUBIN: str | None = None
 
@@ -61,17 +65,47 @@ def validate(a, b_left, b_gate):
     return M, H, K
 
 
+def _cuda_driver_version() -> int:
+    """Return the CUDA driver API version, for example 12080 for CUDA 12.8."""
+    rt, driver = runtime._backends()
+    return int(rt.cu(driver.cuDriverGetVersion()))
+
+
+def _compile_cubin_fallback(reason: str | None) -> str:
+    build = kcache.cache_root() / "build" / ARCH / "hopper"
+    build.mkdir(parents=True, exist_ok=True)
+    dst = build / _SRC.name
+    src_text = _SRC.read_text()
+    if not dst.exists() or dst.read_text() != src_text:
+        dst.write_text(src_text)
+    try:
+        return compiler.compile_one(str(dst), arch=ARCH, extra_opts=["-DLB_MIN_BLOCKS=1"])
+    except Exception as exc:
+        if reason:
+            raise RuntimeError(
+                "Unable to use the packaged Hopper SwiGLU cubin "
+                f"({reason}), and the nvcc fallback failed."
+            ) from exc
+        raise
+
+
 def _ensure_cubin() -> str:
-    """Compile the shipped Hopper SwiGLU .cu into the artifact cache once."""
+    """Return a usable Hopper SwiGLU cubin, preferring the packaged binary."""
     global _CUBIN
     if _CUBIN is None:
-        build = kcache.cache_root() / "build" / ARCH / "hopper"
-        build.mkdir(parents=True, exist_ok=True)
-        dst = build / _SRC.name
-        src_text = _SRC.read_text()
-        if not dst.exists() or dst.read_text() != src_text:
-            dst.write_text(src_text)
-        _CUBIN = compiler.compile_one(str(dst), arch=ARCH, extra_opts=["-DLB_MIN_BLOCKS=1"])
+        reason = None
+        if _PACKAGED_CUBIN.exists():
+            driver_version = _cuda_driver_version()
+            if driver_version >= _PACKAGED_CUBIN_MIN_DRIVER:
+                _CUBIN = str(_PACKAGED_CUBIN)
+                return _CUBIN
+            reason = (
+                f"CUDA driver API version {driver_version} is older than "
+                f"{_PACKAGED_CUBIN_MIN_DRIVER} required by the bundled CUDA 12.8 cubin"
+            )
+        else:
+            reason = f"packaged cubin not found at {_PACKAGED_CUBIN}"
+        _CUBIN = _compile_cubin_fallback(reason)
     return _CUBIN
 
 
