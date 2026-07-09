@@ -1,8 +1,8 @@
-"""Quickstart: fused GEMM + SwiGLU (dual-B) on Blackwell (B200).
+"""Quickstart: training-style fused GEMM + SwiGLU (dual-B), storing preact.
 
-    python examples/quickstart_swiglu.py                  # default FFN shape 30000x4608x768
-    python examples/quickstart_swiglu.py 8192             # square 8192
-    python examples/quickstart_swiglu.py 30000 4608 768   # M N K
+    python examples/quickstart_swiglu_training.py                  # default FFN shape 30000x4608x768
+    python examples/quickstart_swiglu_training.py 8192             # square 8192
+    python examples/quickstart_swiglu_training.py 30000 4608 768   # M N K
 
 A = [M, K]; packed projection weight B = [K, N], split by column views into
 B_left, B_gate = [K, N/2]; bf16, M arbitrary (ragged token counts welcome),
@@ -32,7 +32,7 @@ elif len(args) == 1:
 elif len(args) == 3:
     M, N, K = (int(x) for x in args)
 else:
-    sys.exit("usage: quickstart_swiglu.py [N | M N K]")
+    sys.exit("usage: quickstart_swiglu_training.py [N | M N K]")
 
 H = N // 2
 a = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
